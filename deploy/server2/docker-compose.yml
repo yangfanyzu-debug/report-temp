@@ -1,0 +1,93 @@
+services:
+  backend:
+    build:
+      context: ./source
+      dockerfile: deploy/Dockerfile.backend
+    image: ruoyi-vue-backend:springboot2-b565975
+    container_name: ruoyi-vue-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      JAVA_OPTS: >-
+        -Xms128m -Xmx384m -XX:+UseG1GC
+        -Djava.security.egd=file:/dev/./urandom
+      SPRING_DATASOURCE_DRUID_MASTER_URL: jdbc:mysql://host.docker.internal:13306/ry_vue?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=GMT%2B8
+      SPRING_DATASOURCE_DRUID_MASTER_USERNAME: ${DB_USER}
+      SPRING_DATASOURCE_DRUID_MASTER_PASSWORD: ${DB_PASSWORD}
+      SPRING_REDIS_HOST: host.docker.internal
+      SPRING_REDIS_PORT: 16379
+      SPRING_REDIS_DATABASE: 1
+      SPRING_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SPRING_DEVTOOLS_RESTART_ENABLED: "false"
+      RUOYI_PROFILE: /home/ruoyi/uploadPath
+      TOKEN_SECRET: ${TOKEN_SECRET}
+      SWAGGER_ENABLED: "false"
+      SERVER_TOMCAT_THREADS_MAX: 100
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      LOGGING_LEVEL_COM_RUOYI: info
+    extra_hosts:
+      - host.docker.internal:172.17.0.1
+    volumes:
+      - uploads:/home/ruoyi/uploadPath
+      - logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks:
+      - ruoyi
+
+  docx:
+    build:
+      context: ./docx-service
+    image: docx-file-service:36192ee
+    container_name: docx-file-service
+    restart: unless-stopped
+    environment:
+      DOCX_STORAGE_DIR: /data/documents
+      DOCX_PUBLIC_API_PREFIX: /docx-api
+      PORT: 5000
+    volumes:
+      - docx_documents:/data/documents
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ruoyi
+
+  web:
+    build:
+      context: ./source
+      dockerfile: deploy/Dockerfile.web
+    image: ruoyi-vue-web:docx-714389d6
+    container_name: ruoyi-vue-web
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      docx:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ruoyi
+
+volumes:
+  uploads:
+  logs:
+  docx_documents:
+
+networks:
+  ruoyi:
+    name: ruoyi-vue
