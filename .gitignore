@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+frontend/dist/
+backend/storage/documents/*.docx
+backend/storage/documents/.documents.json
+!backend/storage/documents/.gitkeep
