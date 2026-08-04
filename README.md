@@ -32,6 +32,8 @@ DOCX_STORAGE_DIR=/absolute/path/to/documents python backend/run.py
 
 ## API
 
+按文件名查询的独立接口文档见 [docs/query-document-by-filename-api.md](docs/query-document-by-filename-api.md)。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/files/upload` | 使用 multipart/form-data 的 `file` 字段上传文档 |
