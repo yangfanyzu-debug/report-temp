@@ -86,8 +86,8 @@ HTTP 状态码：`200 OK`
       "sizeDisplay": "70.6 KB",
       "updatedAt": "2026-08-04T09:13:12.871581+00:00",
       "uploadedAt": "2026-08-04T09:13:12.872833+00:00",
-      "previewUrl": "/report-docx-api/files/02_%E7%B3%BB%E7%BB%9F%E5%AE%B9%E9%87%8F%E8%AF%84%E4%BC%B0%E6%8A%A5%E5%91%8A.docx/preview",
-      "downloadUrl": "/report-docx-api/files/02_%E7%B3%BB%E7%BB%9F%E5%AE%B9%E9%87%8F%E8%AF%84%E4%BC%B0%E6%8A%A5%E5%91%8A.docx/download"
+      "previewUrl": "http://110.42.239.253/report-docx-api/files/02_%E7%B3%BB%E7%BB%9F%E5%AE%B9%E9%87%8F%E8%AF%84%E4%BC%B0%E6%8A%A5%E5%91%8A.docx/preview",
+      "downloadUrl": "http://110.42.239.253/report-docx-api/files/02_%E7%B3%BB%E7%BB%9F%E5%AE%B9%E9%87%8F%E8%AF%84%E4%BC%B0%E6%8A%A5%E5%91%8A.docx/download"
     }
   ],
   "total": 1

@@ -57,7 +57,9 @@ class DocumentApiTest(unittest.TestCase):
         self.assertEqual(query.status_code, 200)
         self.assertEqual(query.json["total"], 1)
         self.assertEqual(query.json["rows"][0]["name"], "季度报告.docx")
-        self.assertIn("/download", query.json["rows"][0]["downloadUrl"])
+        self.assertTrue(query.json["rows"][0]["downloadUrl"].startswith("http://localhost/api/files/"))
+        self.assertTrue(query.json["rows"][0]["previewUrl"].startswith("http://localhost/api/files/"))
+        self.assertEqual(query.headers["Cache-Control"], "no-store")
 
         preview = self.client.get(query.json["rows"][0]["previewUrl"])
         self.assertEqual(preview.status_code, 200)
@@ -77,6 +79,10 @@ class DocumentApiTest(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertTrue(second.json["replaced"])
         self.assertEqual(second.json["file"]["uploader"], "李四")
+        self.assertNotEqual(first.json["file"]["size"], second.json["file"]["size"])
+
+        query = self.client.get("/api/files", query_string={"filename": "report.docx"})
+        self.assertEqual(query.json["rows"][0]["size"], second.json["file"]["size"])
         with zipfile.ZipFile(Path(self.storage.name) / "report.docx") as archive:
             self.assertIn(b"second version", archive.read("word/document.xml"))
 

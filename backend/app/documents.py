@@ -49,6 +49,8 @@ def _file_info(path: Path, metadata: dict[str, str] | None = None) -> dict[str, 
     stat = path.stat()
     metadata = metadata or {}
     api_prefix = current_app.config["PUBLIC_API_PREFIX"].rstrip("/")
+    if not api_prefix.startswith(("http://", "https://")):
+        api_prefix = f"{request.host_url.rstrip('/')}/{api_prefix.lstrip('/')}"
     encoded_name = quote(path.name, safe="")
     return {
         "name": path.name,
@@ -134,7 +136,9 @@ def list_files():
     rows.sort(key=lambda item: item["updatedAt"], reverse=True)
     total = len(rows)
     start = (page_num - 1) * page_size
-    return jsonify({"rows": rows[start : start + page_size], "total": total})
+    response = jsonify({"rows": rows[start : start + page_size], "total": total})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @documents.get("/<path:filename>/download")
