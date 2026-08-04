@@ -1,0 +1,19 @@
+[Unit]
+Description=DOCX File Service
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ruoyi-vue/docx-service
+Environment=HOST=172.17.0.1
+Environment=PORT=5001
+Environment=DOCX_STORAGE_DIR=/opt/ruoyi-vue/docx-data
+Environment=DOCX_PUBLIC_API_PREFIX=/docx-api
+ExecStart=/opt/ruoyi-vue/docx-service/.venv/bin/python backend/run.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

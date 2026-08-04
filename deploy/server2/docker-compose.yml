@@ -40,38 +40,15 @@ services:
     networks:
       - ruoyi
 
-  docx:
-    build:
-      context: ./docx-service
-    image: docx-file-service:36192ee
-    container_name: docx-file-service
-    restart: unless-stopped
-    environment:
-      DOCX_STORAGE_DIR: /data/documents
-      DOCX_PUBLIC_API_PREFIX: /docx-api
-      PORT: 5000
-    volumes:
-      - docx_documents:/data/documents
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    networks:
-      - ruoyi
-
   web:
     build:
-      context: ./source
-      dockerfile: deploy/Dockerfile.web
+      context: ./prebuilt-web
+      dockerfile: Dockerfile
     image: ruoyi-vue-web:docx-714389d6
     container_name: ruoyi-vue-web
     restart: unless-stopped
     depends_on:
       backend:
-        condition: service_healthy
-      docx:
         condition: service_healthy
     ports:
       - "80:80"
@@ -86,7 +63,6 @@ services:
 volumes:
   uploads:
   logs:
-  docx_documents:
 
 networks:
   ruoyi:
