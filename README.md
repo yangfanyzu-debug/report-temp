@@ -51,7 +51,7 @@ python -m unittest discover -s backend/tests -v
 docker build -t docx-file-service .
 docker run --rm -p 5000:5000 \
   -e DOCX_STORAGE_DIR=/data/documents \
-  -e DOCX_PUBLIC_API_PREFIX=/docx-api \
+  -e DOCX_PUBLIC_API_PREFIX=/report-docx-api \
   -v docx_documents:/data/documents \
   docx-file-service
 ```
