@@ -1,0 +1,14 @@
+[Unit]
+Description=Report Management AI Audit Worker
+After=network.target report-management-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/report-management/backend
+EnvironmentFile=/opt/report-management/backend/.env
+ExecStart=/opt/report-management/backend/.venv/bin/python run_worker.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

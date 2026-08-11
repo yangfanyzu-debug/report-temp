@@ -1,0 +1,249 @@
+# 报告管理接口契约草案
+
+Base path:
+
+```text
+/api/report-management
+```
+
+## 状态枚举
+
+审核状态：
+
+| 值 | 中文展示 | 说明 |
+| --- | --- | --- |
+| `pending` | 待审核 | 审核记录已创建，尚未开始 |
+| `running` | 审核中 | 后台正在解析 DOCX 或调用模型 |
+| `passed` | 审核通过 | 模型输出通过 |
+| `failed` | 审核不通过 | 模型输出不通过 |
+| `error` | 审核失败 | 系统异常或模型调用失败 |
+
+版本类型：
+
+| 值 | 中文展示 |
+| --- | --- |
+| `initial` | 初始版本 |
+| `uploaded` | 上传版本 |
+
+## 报告列表
+
+```text
+GET /api/report-management/reports
+```
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `systemId` | string | 否 | 系统编码模糊查询 |
+| `title` | string | 否 | 标题模糊查询 |
+| `reportMonth` | string | 否 | 报表月份，格式 `YYYY年MM月` |
+| `auditStatus` | string | 否 | 最新版本最新审核状态 |
+| `pageNum` | integer | 否 | 默认 1 |
+| `pageSize` | integer | 否 | 默认 10 |
+
+响应示例：
+
+```json
+{
+  "rows": [
+    {
+      "id": 1,
+      "systemId": "credit-card-center",
+      "title": "中信银行信用卡中心授权交易资源分析报告",
+      "reportMonth": "2025年08月",
+      "latestVersionId": 10,
+      "latestVersionNo": 2,
+      "latestVersionType": "uploaded",
+      "latestAuditId": 99,
+      "latestAuditStatus": "failed",
+      "latestAuditConclusion": "不通过",
+      "latestAuditSuggestion": "请修正系统概述与性能分析小结中的ES服务器数量",
+      "createTime": "2026-08-11 10:30:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+## 报告详情
+
+```text
+GET /api/report-management/reports/{reportId}
+```
+
+响应示例：
+
+```json
+{
+  "id": 1,
+  "systemId": "credit-card-center",
+  "title": "中信银行信用卡中心授权交易资源分析报告",
+  "reportMonth": "2025年08月",
+  "versions": [
+    {
+      "id": 9,
+      "versionNo": 1,
+      "versionType": "initial",
+      "fileName": "中信银行信用卡中心授权交易资源分析报告(2025年08月).docx",
+      "fileSize": 72314,
+      "auditStatus": "failed",
+      "uploader": "批次任务",
+      "source": "batch",
+      "createTime": "2026-08-11 10:30:00",
+      "latestAuditId": 88,
+      "latestAuditConclusion": "不通过"
+    },
+    {
+      "id": 10,
+      "versionNo": 2,
+      "versionType": "uploaded",
+      "fileName": "中信银行信用卡中心授权交易资源分析报告-修订版.docx",
+      "fileSize": 74200,
+      "auditStatus": "running",
+      "uploader": "未知用户",
+      "source": "upload",
+      "createTime": "2026-08-11 11:20:00",
+      "latestAuditId": 99,
+      "latestAuditConclusion": "审核中"
+    }
+  ]
+}
+```
+
+## 注册初始报告并发起审核
+
+给跑批任务调用。接口必须幂等：同一个 `systemId + title + reportMonth` 的初始版本已存在时，不重复创建版本，可按需重新发起审核。
+
+```text
+POST /api/report-management/reports/register
+```
+
+请求示例：
+
+```json
+{
+  "systemId": "credit-card-center",
+  "title": "中信银行信用卡中心授权交易资源分析报告",
+  "reportMonth": "2025年08月",
+  "filePath": "/appdata/aiops_inspect/B-plan/data/docfile_output/中信银行信用卡中心授权交易资源分析报告(2025年08月).docx",
+  "source": "batch"
+}
+```
+
+响应示例：
+
+```json
+{
+  "reportId": 1,
+  "versionId": 9,
+  "auditId": 88,
+  "auditStatus": "pending"
+}
+```
+
+## 上传新版本并发起审核
+
+同名文件不得覆盖旧文件。后端必须生成新的服务端文件名和新的版本号。
+
+```text
+POST /api/report-management/reports/{reportId}/versions
+Content-Type: multipart/form-data
+```
+
+表单字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | file | 是 | DOCX 文件 |
+| `uploader` | string | 否 | 上传人，默认 `未知用户` |
+
+响应示例：
+
+```json
+{
+  "reportId": 1,
+  "versionId": 10,
+  "versionNo": 2,
+  "auditId": 99,
+  "auditStatus": "pending"
+}
+```
+
+## 预览版本
+
+```text
+GET /api/report-management/versions/{versionId}/preview
+```
+
+返回 DOCX 二进制流：
+
+```text
+Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+```
+
+## 下载版本
+
+```text
+GET /api/report-management/versions/{versionId}/download
+```
+
+返回 DOCX 附件。
+
+## 审核详情
+
+```text
+GET /api/report-management/audits/{auditId}
+```
+
+响应示例：
+
+```json
+{
+  "id": 99,
+  "status": "failed",
+  "summary": {
+    "结论": "不通过",
+    "问题数量": 1,
+    "建议": "请修正系统概述与性能分析小结中的ES服务器数量"
+  },
+  "resultData": {
+    "data": [
+      {
+        "检查点": "检测章节应用指标统计与分析是否空缺",
+        "分析结果": "应用指标统计与分析章节包含交易量趋势分析和交易平均响应时间与交易成功率，内容完整，无空缺"
+      }
+    ]
+  },
+  "promptId": 1,
+  "promptVersion": 3,
+  "modelName": "deepseek-chat",
+  "errorMessage": null,
+  "startedAt": "2026-08-11 11:20:01",
+  "finishedAt": "2026-08-11 11:20:35"
+}
+```
+
+## 查看当前启用提示词
+
+```text
+GET /api/report-management/audit-prompts/active
+```
+
+## 修改提示词
+
+修改提示词必须生成新版本，并启用新版本。
+
+```text
+POST /api/report-management/audit-prompts
+```
+
+请求示例：
+
+```json
+{
+  "name": "默认审核提示词",
+  "promptContent": "请根据以下检查点审核性能容量报告，并输出JSON...",
+  "modelName": "deepseek-chat"
+}
+```
