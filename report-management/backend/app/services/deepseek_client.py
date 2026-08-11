@@ -17,11 +17,14 @@ class DeepSeekClient:
         self.settings = settings
 
     def audit_report(self, prompt: dict[str, Any], audit_input: dict[str, Any]) -> dict[str, Any]:
-        if not self.settings.deepseek_url or not self.settings.deepseek_key:
+        api_url = prompt.get("apiUrl") or self.settings.deepseek_url
+        api_key = prompt.get("apiKey") or self.settings.deepseek_key
+        model_name = prompt.get("modelName") or self.settings.deepseek_model
+        if not api_url or not api_key:
             raise DeepSeekNotConfigured("DeepSeek API URL 或 Key 未配置")
 
         request_payload = {
-            "model": prompt["modelName"] or self.settings.deepseek_model,
+            "model": model_name,
             "messages": [
                 {"role": "system", "content": prompt["promptContent"]},
                 {
@@ -33,10 +36,10 @@ class DeepSeekClient:
             "temperature": 0.1,
         }
         request = urllib.request.Request(
-            chat_completions_url(self.settings.deepseek_url),
+            chat_completions_url(api_url),
             data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {self.settings.deepseek_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",

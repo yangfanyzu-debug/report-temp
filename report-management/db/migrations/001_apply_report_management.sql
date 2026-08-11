@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS `capability_report_audit_prompt` (
   `version` int(11) NOT NULL DEFAULT '1' COMMENT '提示词版本',
   `enabled` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否启用',
   `model_name` varchar(64) COLLATE utf8mb4_bin NOT NULL DEFAULT 'ark-code-latest' COMMENT '模型名称',
+  `api_url` varchar(512) COLLATE utf8mb4_bin NOT NULL DEFAULT 'https://ark.cn-beijing.volces.com/api/coding/v3' COMMENT '大模型API地址',
+  `api_key` varchar(512) COLLATE utf8mb4_bin NOT NULL DEFAULT '' COMMENT '大模型API Key',
   `create_time` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   `update_time` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (`id`) USING BTREE,
@@ -119,13 +121,15 @@ CALL ensure_report_log_indexes();
 DROP PROCEDURE ensure_report_log_indexes;
 
 INSERT INTO capability_report_audit_prompt
-  (`name`, `prompt_content`, `version`, `enabled`, `model_name`)
+  (`name`, `prompt_content`, `version`, `enabled`, `model_name`, `api_url`, `api_key`)
 SELECT
   '默认审核提示词',
   '你是性能容量报告审核助手。请根据输入的 DOCX 文本、表格和章节结构，审核报告是否满足性能容量报告质量要求。只审核文档标题和章节结构、正文文字、表格内容，以及能从文字或表格中明确读取到的指标、数量、结论和建议。不要审核图片、截图、图表图片或无法从文本中读取的视觉语义。必须只输出 JSON，结构为 {"summary":{"结论":"通过或不通过","问题数量":0,"建议":"如果通过，写无明显问题；如果不通过，写最重要的修改建议"},"data":[{"检查点":"检查点名称","分析结果":"具体分析结果"}]}。如果无法判断某个检查点，不要编造结论，应在分析结果中说明缺少依据。',
   1,
   1,
-  'ark-code-latest'
+  'ark-code-latest',
+  'https://ark.cn-beijing.volces.com/api/coding/v3',
+  ''
 FROM DUAL
 WHERE NOT EXISTS (
   SELECT 1 FROM capability_report_audit_prompt

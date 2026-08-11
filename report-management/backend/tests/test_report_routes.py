@@ -36,6 +36,7 @@ class FakeReportRepository:
             "systemId": "credit-card-center",
             "title": "中信银行信用卡中心授权交易资源分析报告",
             "reportMonth": "2025年08月",
+            "jiraId": "JIRA-10086",
             "versions": [
                 {
                     "id": 10,
@@ -61,6 +62,10 @@ class FakeReportRepository:
             "version": 2,
             "enabled": True,
             "modelName": "deepseek-chat",
+            "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "apiKey": "ark-secret-abcd",
+            "apiKeyMasked": "ark-****abcd",
+            "apiKeyConfigured": True,
             "createTime": "2026-08-11 10:00:00",
             "updateTime": "2026-08-11 11:00:00",
         }
@@ -95,6 +100,7 @@ class FakeReportRepository:
                     "systemId": "credit-card-center",
                     "title": "中信银行信用卡中心授权交易资源分析报告",
                     "reportMonth": "2025年08月",
+                    "jiraId": "JIRA-10086",
                     "latestVersionId": 10,
                     "latestVersionNo": 2,
                     "latestVersionType": "uploaded",
@@ -150,6 +156,10 @@ class FakeReportRepository:
             "version": 3,
             "enabled": True,
             "modelName": payload["modelName"],
+            "apiUrl": payload["apiUrl"],
+            "apiKey": payload.get("apiKey", ""),
+            "apiKeyMasked": "ark-****wxyz",
+            "apiKeyConfigured": True,
             "createTime": "2026-08-11 12:00:00",
             "updateTime": "2026-08-11 12:00:00",
         }
@@ -194,6 +204,7 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.json["total"], 1)
+        self.assertEqual(response.json["rows"][0]["jiraId"], "JIRA-10086")
         self.assertEqual(response.json["rows"][0]["latestAuditConclusion"], "不通过")
         self.assertEqual(
             self.repository.last_filters,
@@ -227,12 +238,14 @@ class ReportRoutesTest(unittest.TestCase):
                 "title": "中信银行信用卡中心授权交易资源分析报告",
                 "reportMonth": "2025年08月",
                 "filePath": "/appdata/report.docx",
+                "jiraId": "JIRA-10086",
             },
         )
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json, {"reportId": 1, "versionId": 9, "auditId": 88, "auditStatus": "pending"})
         self.assertEqual(self.repository.registered_payload["source"], "batch")
+        self.assertEqual(self.repository.registered_payload["jiraId"], "JIRA-10086")
 
     def test_register_initial_report_requires_fields(self):
         response = self.client.post("/api/report-management/reports/register", json={"systemId": "x"})
@@ -323,6 +336,9 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.json["version"], 2)
         self.assertTrue(response.json["enabled"])
+        self.assertEqual(response.json["apiUrl"], "https://ark.cn-beijing.volces.com/api/coding/v3")
+        self.assertTrue(response.json["apiKeyConfigured"])
+        self.assertNotIn("apiKey", response.json)
 
     def test_get_active_prompt_returns_404_when_missing(self):
         self.repository.active_prompt = None
@@ -337,6 +353,8 @@ class ReportRoutesTest(unittest.TestCase):
             "/api/report-management/audit-prompts",
             json={
                 "name": "默认审核提示词",
+                "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "apiKey": "ark-new-key",
                 "promptContent": "新的审核提示词",
                 "modelName": "deepseek-reasoner",
             },
@@ -345,10 +363,13 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["version"], 3)
         self.assertEqual(response.json["modelName"], "deepseek-reasoner")
+        self.assertNotIn("apiKey", response.json)
         self.assertEqual(
             self.repository.created_prompt_payload,
             {
                 "name": "默认审核提示词",
+                "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "apiKey": "ark-new-key",
                 "promptContent": "新的审核提示词",
                 "modelName": "deepseek-reasoner",
             },

@@ -63,6 +63,7 @@ def register_initial_report():
             "title": payload["title"].strip(),
             "reportMonth": payload["reportMonth"].strip(),
             "filePath": payload["filePath"].strip(),
+            "jiraId": str(payload.get("jiraId", "")).strip(),
             "source": payload.get("source", "batch"),
         }
     )

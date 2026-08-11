@@ -51,6 +51,14 @@ def _format_time(value: Any) -> str | None:
     return str(value)
 
 
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "****"
+    return f"{value[:4]}****{value[-4:]}"
+
+
 class MySqlAuditRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -99,7 +107,7 @@ class MySqlAuditRepository:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, name, prompt_content, version, enabled, model_name, create_time, update_time
+                    SELECT id, name, prompt_content, version, enabled, model_name, api_url, api_key, create_time, update_time
                     FROM capability_report_audit_prompt
                     WHERE enabled = 1
                     ORDER BY version DESC, id DESC
@@ -113,6 +121,18 @@ class MySqlAuditRepository:
         name = payload["name"]
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT api_key
+                    FROM capability_report_audit_prompt
+                    WHERE name = %s AND enabled = 1
+                    ORDER BY version DESC, id DESC
+                    LIMIT 1
+                    """,
+                    [name],
+                )
+                active_prompt = cursor.fetchone()
+                api_key = payload.get("apiKey") or (active_prompt["api_key"] if active_prompt else "")
                 cursor.execute(
                     """
                     SELECT COALESCE(MAX(version), 0) AS latest_version
@@ -129,15 +149,15 @@ class MySqlAuditRepository:
                 cursor.execute(
                     """
                     INSERT INTO capability_report_audit_prompt
-                      (`name`, `prompt_content`, `version`, `enabled`, `model_name`)
-                    VALUES (%s, %s, %s, 1, %s)
+                      (`name`, `prompt_content`, `version`, `enabled`, `model_name`, `api_url`, `api_key`)
+                    VALUES (%s, %s, %s, 1, %s, %s, %s)
                     """,
-                    [name, payload["promptContent"], version, payload["modelName"]],
+                    [name, payload["promptContent"], version, payload["modelName"], payload["apiUrl"], api_key],
                 )
                 prompt_id = int(cursor.lastrowid)
                 cursor.execute(
                     """
-                    SELECT id, name, prompt_content, version, enabled, model_name, create_time, update_time
+                    SELECT id, name, prompt_content, version, enabled, model_name, api_url, api_key, create_time, update_time
                     FROM capability_report_audit_prompt
                     WHERE id = %s
                     """,
@@ -253,6 +273,10 @@ class MySqlAuditRepository:
             "version": row["version"],
             "enabled": bool(row["enabled"]),
             "modelName": row["model_name"],
+            "apiUrl": row["api_url"],
+            "apiKey": row["api_key"],
+            "apiKeyMasked": _mask_secret(row["api_key"]),
+            "apiKeyConfigured": bool(row["api_key"]),
             "createTime": _format_time(row["create_time"]),
             "updateTime": _format_time(row["update_time"]),
         }

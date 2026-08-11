@@ -93,6 +93,7 @@ class MySqlReportRepository:
                       report.systemId,
                       report.title,
                       report.report_month,
+                      report.jira_id,
                       report.create_time,
                       latest_version.id AS latest_version_id,
                       latest_version.version_no AS latest_version_no,
@@ -117,7 +118,7 @@ class MySqlReportRepository:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, systemId, title, report_month, report_data, meta_data, create_time
+                    SELECT id, systemId, title, report_month, jira_id, report_data, meta_data, create_time
                       FROM capability_report_log
                      WHERE id = %s
                     """,
@@ -160,6 +161,7 @@ class MySqlReportRepository:
             "systemId": report["systemId"],
             "title": report["title"],
             "reportMonth": report["report_month"],
+            "jiraId": report["jira_id"],
             "reportData": _json_value(report["report_data"]),
             "metaData": _json_value(report["meta_data"]),
             "createTime": _format_time(report["create_time"]),
@@ -176,13 +178,14 @@ class MySqlReportRepository:
                 cursor.execute(
                     """
                     INSERT INTO capability_report_log
-                      (`systemId`, `title`, `report_month`, `report_data`, `meta_data`)
-                    VALUES (%s, %s, %s, %s, NULL)
+                      (`systemId`, `title`, `report_month`, `report_data`, `meta_data`, `jira_id`)
+                    VALUES (%s, %s, %s, %s, NULL, %s)
                     ON DUPLICATE KEY UPDATE
                       `report_data` = VALUES(`report_data`),
+                      `jira_id` = VALUES(`jira_id`),
                       `id` = LAST_INSERT_ID(`id`)
                     """,
-                    [payload["systemId"], payload["title"], payload["reportMonth"], report_data],
+                    [payload["systemId"], payload["title"], payload["reportMonth"], report_data, payload.get("jiraId", "")],
                 )
                 report_id = int(cursor.lastrowid)
                 cursor.execute(
@@ -314,6 +317,7 @@ class MySqlReportRepository:
             "systemId": row["systemId"],
             "title": row["title"],
             "reportMonth": row["report_month"],
+            "jiraId": row["jira_id"],
             "latestVersionId": row["latest_version_id"],
             "latestVersionNo": row["latest_version_no"],
             "latestVersionType": row["latest_version_type"],
