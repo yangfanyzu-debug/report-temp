@@ -1,6 +1,8 @@
 -- Add natural-language audit results, checkpoint snapshots and configurable checkpoints.
 -- Compatible with MySQL 5.7 and existing JSON audit records.
 
+SET NAMES utf8mb4;
+
 DROP PROCEDURE IF EXISTS ensure_report_audit_conversation_columns;
 DELIMITER $$
 CREATE PROCEDURE ensure_report_audit_conversation_columns()
