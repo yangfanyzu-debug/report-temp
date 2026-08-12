@@ -134,6 +134,21 @@ class FakeReportRepository:
                 }
             ],
         }
+        self.agent_messages = [
+            {
+                "id": 1,
+                "replyToId": None,
+                "role": "user",
+                "content": "报告有什么问题？",
+                "status": "completed",
+                "modelName": None,
+                "errorMessage": None,
+                "createTime": "2026-08-11 12:00:00",
+                "updateTime": "2026-08-11 12:00:00",
+                "finishedAt": None,
+            }
+        ]
+        self.created_agent_exchange = None
 
     def list_reports(self, filters, page_num, page_size):
         self.last_filters = filters
@@ -231,6 +246,15 @@ class FakeReportRepository:
 
     def get_report_conversation(self, report_id):
         return self.conversation if report_id == 1 else None
+
+    def list_agent_messages(self, report_id, version_id):
+        return self.agent_messages if report_id == 1 and version_id == 10 else None
+
+    def create_agent_exchange(self, report_id, version_id, content):
+        if report_id != 1 or version_id != 10:
+            return None
+        self.created_agent_exchange = (report_id, version_id, content)
+        return {"userMessageId": 2, "assistantMessageId": 3, "status": "pending"}
 
 
 class ReportRoutesTest(unittest.TestCase):
@@ -416,6 +440,33 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["versions"][0]["resultText"].splitlines()[0], "审核结论：不通过")
+
+    def test_list_and_create_agent_messages(self):
+        listed = self.client.get("/api/report-management/audits/reports/1/versions/10/messages")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json["messages"][0]["role"], "user")
+        self.assertFalse(listed.json["processing"])
+
+        created = self.client.post(
+            "/api/report-management/audits/reports/1/versions/10/messages",
+            json={"content": "请给出具体修改建议"},
+        )
+        self.assertEqual(created.status_code, 202)
+        self.assertEqual(created.json["assistantMessageId"], 3)
+        self.assertEqual(self.repository.created_agent_exchange, (1, 10, "请给出具体修改建议"))
+
+    def test_create_agent_message_validates_content_and_version(self):
+        empty = self.client.post(
+            "/api/report-management/audits/reports/1/versions/10/messages", json={"content": "  "}
+        )
+        self.assertEqual(empty.status_code, 400)
+        self.assertEqual(empty.json, {"message": "对话内容不能为空"})
+
+        missing = self.client.post(
+            "/api/report-management/audits/reports/1/versions/999/messages", json={"content": "请分析"}
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json, {"message": "未找到该报告版本"})
 
     def test_manage_audit_checkpoints(self):
         listed = self.client.get("/api/report-management/audit-checkpoints")

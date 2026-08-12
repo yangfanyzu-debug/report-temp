@@ -52,3 +52,34 @@ def get_report_conversation(report_id: int):
     response = jsonify(conversation)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@audits.get("/reports/<int:report_id>/versions/<int:version_id>/messages")
+def list_agent_messages(report_id: int, version_id: int):
+    messages = _repository().list_agent_messages(report_id, version_id)
+    if messages is None:
+        return jsonify({"message": "未找到该报告版本"}), 404
+    response = jsonify(
+        {
+            "reportId": report_id,
+            "versionId": version_id,
+            "messages": messages,
+            "processing": any(item["status"] in {"pending", "running"} for item in messages),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@audits.post("/reports/<int:report_id>/versions/<int:version_id>/messages")
+def create_agent_message(report_id: int, version_id: int):
+    payload = request.get_json(silent=True) or {}
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        return jsonify({"message": "对话内容不能为空"}), 400
+    if len(content) > 2000:
+        return jsonify({"message": "单次对话内容不能超过2000字"}), 400
+    result = _repository().create_agent_exchange(report_id, version_id, content)
+    if result is None:
+        return jsonify({"message": "未找到该报告版本"}), 404
+    return jsonify(result), 202

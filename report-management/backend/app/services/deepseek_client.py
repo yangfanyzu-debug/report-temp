@@ -67,6 +67,55 @@ class DeepSeekClient:
             raise RuntimeError("大模型未返回审核内容")
         return parse_model_result(content)
 
+    def chat_report_agent(
+        self,
+        prompt: dict[str, Any],
+        report_context: dict[str, Any],
+        history: list[dict[str, str]],
+        question: str,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> str:
+        api_url = prompt.get("apiUrl") or self.settings.deepseek_url
+        api_key = prompt.get("apiKey") or self.settings.deepseek_key
+        model_name = prompt.get("modelName") or self.settings.deepseek_model
+        if not api_url or not api_key:
+            raise DeepSeekNotConfigured("DeepSeek API URL 或 Key 未配置")
+
+        system_content = (
+            "你是性能容量报告AI助手。必须基于给定报告文字、表格、审核检查点和最新审核结果回答，"
+            "不得声称看到了未解析的图片或图表语义。使用中文 Markdown，结论具体、简洁；"
+            "用户要求修改时，只提供可执行的修改建议或替换文本，不声称已经修改DOCX。\n\n"
+            "【当前审核配置】\n" + prompt["promptContent"] + "\n\n"
+            "【当前报告上下文】\n" + json.dumps(report_context, ensure_ascii=False)
+        )
+        messages = [{"role": "system", "content": system_content}]
+        messages.extend(
+            {"role": item["role"], "content": item["content"]}
+            for item in history
+            if item.get("role") in {"user", "assistant"} and item.get("content")
+        )
+        messages.append({"role": "user", "content": question})
+        request_payload = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": True,
+        }
+        request = urllib.request.Request(
+            chat_completions_url(api_url),
+            data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                content = parse_chat_stream(response, on_delta)
+        except urllib.error.URLError as error:
+            raise RuntimeError(f"DeepSeek API 调用失败：{error}") from error
+        if not content:
+            raise RuntimeError("大模型未返回对话内容")
+        return content
+
 
 def chat_completions_url(base_url: str) -> str:
     normalized = base_url.rstrip("/")

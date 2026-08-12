@@ -10,6 +10,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.audit_input import build_audit_input  # noqa: E402
+from app.services.agent_worker import AgentWorker  # noqa: E402
 from app.services.audit_worker import AuditWorker  # noqa: E402
 from app.services.deepseek_client import (  # noqa: E402
     chat_completions_url,
@@ -83,6 +84,41 @@ class FakeModelClient:
             on_delta("审核结论：通过\n")
             on_delta("未发现明显问题。")
         return self.result
+
+    def chat_report_agent(self, prompt, report_context, history, question, on_delta=None):
+        self.calls.append((prompt, report_context, history, question))
+        if on_delta:
+            on_delta("建议将ES服务器数量")
+            on_delta("统一为14台。")
+        return "建议将ES服务器数量统一为14台。"
+
+
+class FakeAgentRepository:
+    def __init__(self, job=None, prompt=None):
+        self.job = job
+        self.prompt = prompt
+        self.running = []
+        self.chunks = []
+        self.completed = []
+        self.errors = []
+
+    def next_pending_agent_message(self):
+        return self.job
+
+    def get_active_prompt(self):
+        return self.prompt
+
+    def mark_agent_message_running(self, message_id, model_name):
+        self.running.append((message_id, model_name))
+
+    def append_agent_message_content(self, message_id, content):
+        self.chunks.append((message_id, content))
+
+    def mark_agent_message_complete(self, message_id):
+        self.completed.append(message_id)
+
+    def mark_agent_message_error(self, message_id, message):
+        self.errors.append((message_id, message))
 
 
 class AuditWorkerTest(unittest.TestCase):
@@ -195,6 +231,42 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
         self.assertEqual(repository.errors, [(99, 10, "报告文件不存在")])
         self.assertEqual(repository.events[-1][2], "failed")
+
+    def test_agent_worker_streams_and_completes_reply(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = Path(temporary_dir) / "报告.docx"
+            write_docx(path)
+            job = {
+                "messageId": 21,
+                "filePath": str(path),
+                "fileName": "报告.docx",
+                "systemId": "capacity",
+                "title": "容量报告",
+                "reportMonth": "2026年08月",
+                "question": "ES服务器数量应该怎么改？",
+                "auditResult": "审核结论：不通过",
+                "checkpoints": [],
+                "history": [{"role": "user", "content": "报告有什么问题？"}],
+            }
+            prompt = {"modelName": "deepseek-chat", "promptContent": "请审核"}
+            repository = FakeAgentRepository(job, prompt)
+            model_client = FakeModelClient()
+
+            result = AgentWorker(repository, model_client).run_once()
+
+        self.assertEqual(result, {"processed": True, "messageId": 21, "status": "completed"})
+        self.assertEqual(repository.running, [(21, "deepseek-chat")])
+        self.assertEqual("".join(chunk for _, chunk in repository.chunks), "建议将ES服务器数量统一为14台。")
+        self.assertEqual(repository.completed, [21])
+        self.assertEqual(model_client.calls[0][3], "ES服务器数量应该怎么改？")
+
+    def test_agent_worker_marks_error_when_model_is_missing(self):
+        repository = FakeAgentRepository({"messageId": 22})
+
+        result = AgentWorker(repository, FakeModelClient()).run_once()
+
+        self.assertEqual(result, {"processed": True, "messageId": 22, "status": "error"})
+        self.assertEqual(repository.errors, [(22, "未配置启用的AI模型")])
 
 
 if __name__ == "__main__":

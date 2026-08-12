@@ -41,6 +41,27 @@ class AuditRepository(Protocol):
     def get_report_conversation(self, report_id: int) -> dict[str, Any] | None:
         ...
 
+    def list_agent_messages(self, report_id: int, version_id: int) -> list[dict[str, Any]] | None:
+        ...
+
+    def create_agent_exchange(self, report_id: int, version_id: int, content: str) -> dict[str, Any] | None:
+        ...
+
+    def next_pending_agent_message(self) -> dict[str, Any] | None:
+        ...
+
+    def mark_agent_message_running(self, message_id: int, model_name: str) -> None:
+        ...
+
+    def append_agent_message_content(self, message_id: int, content: str) -> None:
+        ...
+
+    def mark_agent_message_complete(self, message_id: int) -> None:
+        ...
+
+    def mark_agent_message_error(self, message_id: int, message: str) -> None:
+        ...
+
     def next_pending_audit(self) -> dict[str, Any] | None:
         ...
 
@@ -349,6 +370,157 @@ class MySqlAuditRepository:
             "versions": versions,
         }
 
+    def list_agent_messages(self, report_id: int, version_id: int) -> list[dict[str, Any]] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM capability_report_version WHERE id = %s AND report_id = %s",
+                    [version_id, report_id],
+                )
+                if cursor.fetchone() is None:
+                    return None
+                cursor.execute(
+                    """
+                    SELECT id, reply_to_id, role, content, status, model_name,
+                           error_message, create_time, update_time, finished_at
+                    FROM capability_report_agent_message
+                    WHERE report_id = %s AND version_id = %s
+                    ORDER BY id ASC
+                    LIMIT 200
+                    """,
+                    [report_id, version_id],
+                )
+                rows = cursor.fetchall()
+        return [self._to_agent_message(row) for row in rows]
+
+    def create_agent_exchange(self, report_id: int, version_id: int, content: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM capability_report_version WHERE id = %s AND report_id = %s",
+                    [version_id, report_id],
+                )
+                if cursor.fetchone() is None:
+                    return None
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_agent_message
+                      (`report_id`, `version_id`, `role`, `content`, `status`)
+                    VALUES (%s, %s, 'user', %s, 'completed')
+                    """,
+                    [report_id, version_id, content],
+                )
+                user_message_id = int(cursor.lastrowid)
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_agent_message
+                      (`report_id`, `version_id`, `reply_to_id`, `role`, `content`, `status`)
+                    VALUES (%s, %s, %s, 'assistant', '', 'pending')
+                    """,
+                    [report_id, version_id, user_message_id],
+                )
+                assistant_message_id = int(cursor.lastrowid)
+        return {"userMessageId": user_message_id, "assistantMessageId": assistant_message_id, "status": "pending"}
+
+    def next_pending_agent_message(self) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT message.id AS message_id, message.report_id, message.version_id,
+                           message.reply_to_id, question.content AS question,
+                           version.file_path, version.file_name,
+                           report.systemId, report.title, report.report_month,
+                           audit.result_text, audit.checkpoint_snapshot
+                    FROM capability_report_agent_message message
+                    JOIN capability_report_agent_message question ON question.id = message.reply_to_id
+                    JOIN capability_report_version version ON version.id = message.version_id
+                    JOIN capability_report_log report ON report.id = message.report_id
+                    LEFT JOIN capability_report_audit audit
+                      ON audit.version_id = message.version_id
+                     AND audit.create_time = (
+                         SELECT MAX(inner_audit.create_time)
+                         FROM capability_report_audit inner_audit
+                         WHERE inner_audit.version_id = message.version_id
+                     )
+                    WHERE message.role = 'assistant' AND message.status = 'pending'
+                    ORDER BY message.create_time ASC, message.id ASC
+                    LIMIT 1
+                    """
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                cursor.execute(
+                    """
+                    SELECT role, content
+                    FROM capability_report_agent_message
+                    WHERE report_id = %s AND version_id = %s AND id < %s AND status = 'completed'
+                    ORDER BY id DESC
+                    LIMIT 20
+                    """,
+                    [row["report_id"], row["version_id"], row["reply_to_id"]],
+                )
+                history = list(reversed(cursor.fetchall()))
+        return {
+            "messageId": row["message_id"],
+            "reportId": row["report_id"],
+            "versionId": row["version_id"],
+            "question": row["question"],
+            "filePath": row["file_path"],
+            "fileName": row["file_name"],
+            "systemId": row["systemId"],
+            "title": row["title"],
+            "reportMonth": row["report_month"],
+            "auditResult": row["result_text"],
+            "checkpoints": _json_value(row["checkpoint_snapshot"]) or [],
+            "history": [{"role": item["role"], "content": item["content"]} for item in history],
+        }
+
+    def mark_agent_message_running(self, message_id: int, model_name: str) -> None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE capability_report_agent_message
+                    SET status = 'running', model_name = %s, content = '', error_message = NULL
+                    WHERE id = %s AND status = 'pending'
+                    """,
+                    [model_name, message_id],
+                )
+
+    def append_agent_message_content(self, message_id: int, content: str) -> None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE capability_report_agent_message SET content = CONCAT(COALESCE(content, ''), %s) WHERE id = %s",
+                    [content, message_id],
+                )
+
+    def mark_agent_message_complete(self, message_id: int) -> None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE capability_report_agent_message
+                    SET status = 'completed', finished_at = CURRENT_TIMESTAMP(3), error_message = NULL
+                    WHERE id = %s
+                    """,
+                    [message_id],
+                )
+
+    def mark_agent_message_error(self, message_id: int, message: str) -> None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE capability_report_agent_message
+                    SET status = 'error', error_message = %s, finished_at = CURRENT_TIMESTAMP(3)
+                    WHERE id = %s
+                    """,
+                    [message, message_id],
+                )
+
     def next_pending_audit(self) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
@@ -482,6 +654,20 @@ class MySqlAuditRepository:
             "enabled": bool(row["enabled"]),
             "createTime": _format_time(row["create_time"]),
             "updateTime": _format_time(row["update_time"]),
+        }
+
+    def _to_agent_message(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "replyToId": row["reply_to_id"],
+            "role": row["role"],
+            "content": row["content"] or "",
+            "status": row["status"],
+            "modelName": row["model_name"],
+            "errorMessage": row["error_message"],
+            "createTime": _format_time(row["create_time"]),
+            "updateTime": _format_time(row["update_time"]),
+            "finishedAt": _format_time(row["finished_at"]),
         }
 
     def _legacy_conclusion(self, status: str | None) -> str | None:
