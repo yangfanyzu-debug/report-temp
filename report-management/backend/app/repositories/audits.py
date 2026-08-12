@@ -11,6 +11,12 @@ class AuditRepository(Protocol):
     def get_audit_detail(self, audit_id: int) -> dict[str, Any] | None:
         ...
 
+    def get_audit_events(self, audit_id: int, after_id: int = 0) -> list[dict[str, Any]]:
+        ...
+
+    def append_audit_event(self, audit_id: int, event_type: str, phase: str, content: str) -> int:
+        ...
+
     def get_active_prompt(self) -> dict[str, Any] | None:
         ...
 
@@ -101,6 +107,44 @@ class MySqlAuditRepository:
             "finishedAt": _format_time(row["finished_at"]),
             "createTime": _format_time(row["create_time"]),
         }
+
+    def get_audit_events(self, audit_id: int, after_id: int = 0) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, event_type, phase, content, create_time
+                    FROM capability_report_audit_event
+                    WHERE audit_id = %s AND id > %s
+                    ORDER BY id ASC
+                    LIMIT 500
+                    """,
+                    [audit_id, after_id],
+                )
+                rows = cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "type": row["event_type"],
+                "phase": row["phase"],
+                "content": row["content"],
+                "createTime": _format_time(row["create_time"]),
+            }
+            for row in rows
+        ]
+
+    def append_audit_event(self, audit_id: int, event_type: str, phase: str, content: str) -> int:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_audit_event
+                      (`audit_id`, `event_type`, `phase`, `content`)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    [audit_id, event_type, phase, content],
+                )
+                return int(cursor.lastrowid)
 
     def get_active_prompt(self) -> dict[str, Any] | None:
         with self.database.connection() as connection:

@@ -309,7 +309,16 @@ class MySqlReportRepository:
             """,
             [report_id, version_id],
         )
-        return int(cursor.lastrowid)
+        audit_id = int(cursor.lastrowid)
+        cursor.execute(
+            """
+            INSERT INTO capability_report_audit_event
+              (`audit_id`, `event_type`, `phase`, `content`)
+            VALUES (%s, 'system', 'queued', '报告已登记，等待AI审核')
+            """,
+            [audit_id],
+        )
+        return audit_id
 
     def _to_report_row(self, row: dict[str, Any]) -> dict[str, Any]:
         return {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from ..config import Settings
 
@@ -16,7 +16,12 @@ class DeepSeekClient:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def audit_report(self, prompt: dict[str, Any], audit_input: dict[str, Any]) -> dict[str, Any]:
+    def audit_report(
+        self,
+        prompt: dict[str, Any],
+        audit_input: dict[str, Any],
+        on_delta: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         api_url = prompt.get("apiUrl") or self.settings.deepseek_url
         api_key = prompt.get("apiKey") or self.settings.deepseek_key
         model_name = prompt.get("modelName") or self.settings.deepseek_model
@@ -34,6 +39,7 @@ class DeepSeekClient:
                 },
             ],
             "temperature": 0.1,
+            "stream": True,
         }
         request = urllib.request.Request(
             chat_completions_url(api_url),
@@ -46,11 +52,12 @@ class DeepSeekClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
-                raw_response = json.loads(response.read().decode("utf-8"))
+                content = parse_chat_stream(response, on_delta)
         except urllib.error.URLError as error:
             raise RuntimeError(f"DeepSeek API 调用失败：{error}") from error
 
-        content = raw_response["choices"][0]["message"]["content"]
+        if not content:
+            raise RuntimeError("大模型未返回审核内容")
         return parse_model_json(content)
 
 
@@ -59,6 +66,28 @@ def chat_completions_url(base_url: str) -> str:
     if normalized.endswith("/chat/completions"):
         return normalized
     return f"{normalized}/chat/completions"
+
+
+def parse_chat_stream(
+    lines: Iterable[bytes], on_delta: Callable[[str], None] | None = None
+) -> str:
+    content_parts: list[str] = []
+    for raw_line in lines:
+        line = raw_line.decode("utf-8").strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        if not payload:
+            continue
+        chunk = json.loads(payload)
+        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+        if delta:
+            content_parts.append(delta)
+            if on_delta:
+                on_delta(delta)
+    return "".join(content_parts)
 
 
 def parse_model_json(content: str) -> dict[str, Any]:

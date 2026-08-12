@@ -224,6 +224,51 @@ GET /api/report-management/audits/{auditId}
 }
 ```
 
+## 审核过程事件
+
+前端在审核过程弹窗打开期间按 `afterId` 增量轮询。事件已持久化，刷新页面后可恢复查看。
+
+```text
+GET /api/report-management/audits/{auditId}/events?afterId=0
+```
+
+响应示例：
+
+```json
+{
+  "auditId": 99,
+  "status": "running",
+  "events": [
+    {
+      "id": 101,
+      "type": "system",
+      "phase": "extracting",
+      "content": "正在解析DOCX中的章节、正文和表格",
+      "createTime": "2026-08-12 10:15:01"
+    },
+    {
+      "id": 102,
+      "type": "model",
+      "phase": "streaming",
+      "content": "模型当前生成的审核内容片段",
+      "createTime": "2026-08-12 10:15:03"
+    }
+  ],
+  "lastEventId": 102,
+  "finishedAt": null,
+  "errorMessage": null
+}
+```
+
+事件类型：
+
+| 值 | 说明 |
+| --- | --- |
+| `system` | 排队、文档解析、模型调用和结果校验等系统阶段 |
+| `model` | 大模型流式输出片段 |
+| `result` | 审核完成结论 |
+| `error` | 审核执行异常 |
+
 ## 查看当前启用提示词
 
 ```text

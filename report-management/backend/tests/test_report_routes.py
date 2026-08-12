@@ -89,6 +89,22 @@ class FakeReportRepository:
             "finishedAt": "2026-08-11 11:20:35",
             "createTime": "2026-08-11 11:20:00",
         }
+        self.audit_events = [
+            {
+                "id": 10,
+                "type": "system",
+                "phase": "extracting",
+                "content": "正在解析DOCX中的章节、正文和表格",
+                "createTime": "2026-08-11 11:20:02",
+            },
+            {
+                "id": 11,
+                "type": "model",
+                "phase": "streaming",
+                "content": "正在检查章节完整性",
+                "createTime": "2026-08-11 11:20:03",
+            },
+        ]
 
     def list_reports(self, filters, page_num, page_size):
         self.last_filters = filters
@@ -143,6 +159,11 @@ class FakeReportRepository:
 
     def get_audit_detail(self, audit_id):
         return self.audit_detail if audit_id == 99 else None
+
+    def get_audit_events(self, audit_id, after_id=0):
+        if audit_id != 99:
+            return []
+        return [event for event in self.audit_events if event["id"] > after_id]
 
     def get_active_prompt(self):
         return self.active_prompt
@@ -328,6 +349,20 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json, {"message": "未找到该审核记录"})
+
+    def test_get_audit_events_incrementally(self):
+        response = self.client.get("/api/report-management/audits/99/events?afterId=10")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.json["lastEventId"], 11)
+        self.assertEqual(response.json["events"][0]["type"], "model")
+
+    def test_get_audit_events_rejects_invalid_after_id(self):
+        response = self.client.get("/api/report-management/audits/99/events?afterId=invalid")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json, {"message": "afterId 必须是整数"})
 
     def test_get_active_prompt(self):
         response = self.client.get("/api/report-management/audit-prompts/active")
