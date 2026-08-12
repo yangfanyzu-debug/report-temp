@@ -23,6 +23,24 @@ class AuditRepository(Protocol):
     def create_prompt_version(self, payload: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def list_checkpoints(self) -> list[dict[str, Any]]:
+        ...
+
+    def get_active_checkpoints(self) -> list[dict[str, Any]]:
+        ...
+
+    def create_checkpoint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def update_checkpoint(self, checkpoint_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        ...
+
+    def save_checkpoint_snapshot(self, audit_id: int, checkpoints: list[dict[str, Any]]) -> None:
+        ...
+
+    def get_report_conversation(self, report_id: int) -> dict[str, Any] | None:
+        ...
+
     def next_pending_audit(self) -> dict[str, Any] | None:
         ...
 
@@ -79,6 +97,9 @@ class MySqlAuditRepository:
                       status,
                       summary,
                       result_data,
+                      result_text,
+                      conclusion,
+                      checkpoint_snapshot,
                       prompt_id,
                       prompt_version,
                       model_name,
@@ -99,6 +120,9 @@ class MySqlAuditRepository:
             "status": row["status"],
             "summary": _json_value(row["summary"]),
             "resultData": _json_value(row["result_data"]),
+            "resultText": row["result_text"],
+            "conclusion": row["conclusion"],
+            "checkpointSnapshot": _json_value(row["checkpoint_snapshot"]),
             "promptId": row["prompt_id"],
             "promptVersion": row["prompt_version"],
             "modelName": row["model_name"],
@@ -210,6 +234,121 @@ class MySqlAuditRepository:
                 row = cursor.fetchone()
         return self._to_prompt(row)
 
+    def list_checkpoints(self) -> list[dict[str, Any]]:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, checkpoint_name, checkpoint_content, sort_order, enabled, create_time, update_time
+                    FROM capability_report_audit_checkpoint
+                    ORDER BY sort_order ASC, id ASC
+                    """
+                )
+                rows = cursor.fetchall()
+        return [self._to_checkpoint(row) for row in rows]
+
+    def get_active_checkpoints(self) -> list[dict[str, Any]]:
+        return [checkpoint for checkpoint in self.list_checkpoints() if checkpoint["enabled"]]
+
+    def create_checkpoint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_audit_checkpoint
+                      (`checkpoint_name`, `checkpoint_content`, `sort_order`, `enabled`)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    [payload["name"], payload["content"], payload["sortOrder"], int(payload["enabled"])],
+                )
+                checkpoint_id = int(cursor.lastrowid)
+                row = self._select_checkpoint(cursor, checkpoint_id)
+        return self._to_checkpoint(row)
+
+    def update_checkpoint(self, checkpoint_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                if self._select_checkpoint(cursor, checkpoint_id) is None:
+                    return None
+                cursor.execute(
+                    """
+                    UPDATE capability_report_audit_checkpoint
+                       SET checkpoint_name = %s,
+                           checkpoint_content = %s,
+                           sort_order = %s,
+                           enabled = %s
+                     WHERE id = %s
+                    """,
+                    [payload["name"], payload["content"], payload["sortOrder"], int(payload["enabled"]), checkpoint_id],
+                )
+                row = self._select_checkpoint(cursor, checkpoint_id)
+        return self._to_checkpoint(row)
+
+    def save_checkpoint_snapshot(self, audit_id: int, checkpoints: list[dict[str, Any]]) -> None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE capability_report_audit SET checkpoint_snapshot = %s WHERE id = %s",
+                    [json.dumps(checkpoints, ensure_ascii=False), audit_id],
+                )
+
+    def get_report_conversation(self, report_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, systemId, title, report_month, jira_id FROM capability_report_log WHERE id = %s",
+                    [report_id],
+                )
+                report = cursor.fetchone()
+                if report is None:
+                    return None
+                cursor.execute(
+                    """
+                    SELECT
+                      version.id AS version_id, version.version_no, version.version_type, version.file_name,
+                      version.uploader, version.source, version.audit_status, version.create_time AS version_create_time,
+                      audit.id AS audit_id, audit.status, audit.result_text, audit.conclusion,
+                      audit.summary, audit.result_data, audit.checkpoint_snapshot,
+                      audit.model_name, audit.error_message, audit.started_at, audit.finished_at
+                    FROM capability_report_version version
+                    LEFT JOIN capability_report_audit audit ON audit.version_id = version.id
+                    WHERE version.report_id = %s
+                    ORDER BY version.version_no ASC, audit.create_time ASC, audit.id ASC
+                    """,
+                    [report_id],
+                )
+                rows = cursor.fetchall()
+        versions: list[dict[str, Any]] = []
+        for row in rows:
+            versions.append(
+                {
+                    "versionId": row["version_id"],
+                    "versionNo": row["version_no"],
+                    "versionType": row["version_type"],
+                    "fileName": row["file_name"],
+                    "uploader": row["uploader"],
+                    "source": row["source"],
+                    "auditStatus": row["status"] or row["audit_status"],
+                    "createTime": _format_time(row["version_create_time"]),
+                    "auditId": row["audit_id"],
+                    "resultText": row["result_text"] or self._legacy_result_text(row["summary"], row["result_data"]),
+                    "conclusion": row["conclusion"] or self._legacy_conclusion(row["status"]),
+                    "checkpointSnapshot": _json_value(row["checkpoint_snapshot"]),
+                    "modelName": row["model_name"],
+                    "errorMessage": row["error_message"],
+                    "startedAt": _format_time(row["started_at"]),
+                    "finishedAt": _format_time(row["finished_at"]),
+                }
+            )
+        return {
+            "reportId": report["id"],
+            "systemId": report["systemId"],
+            "title": report["title"],
+            "reportMonth": report["report_month"],
+            "jiraId": report["jira_id"],
+            "versions": versions,
+        }
+
     def next_pending_audit(self) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
@@ -264,25 +403,24 @@ class MySqlAuditRepository:
                 )
 
     def mark_audit_complete(self, audit_id: int, version_id: int, result: dict[str, Any]) -> None:
-        summary = result["summary"]
-        result_data = {"data": result["data"]}
-        status = "passed" if summary.get("结论") == "通过" else "failed"
+        conclusion = result["conclusion"]
+        status = conclusion if conclusion in {"passed", "failed"} else "completed"
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
                     UPDATE capability_report_audit
                        SET status = %s,
-                           summary = %s,
-                           result_data = %s,
+                           result_text = %s,
+                           conclusion = %s,
                            finished_at = CURRENT_TIMESTAMP(3),
                            error_message = NULL
                      WHERE id = %s
                     """,
                     [
                         status,
-                        json.dumps(summary, ensure_ascii=False),
-                        json.dumps(result_data, ensure_ascii=False),
+                        result["resultText"],
+                        conclusion,
                         audit_id,
                     ],
                 )
@@ -324,3 +462,47 @@ class MySqlAuditRepository:
             "createTime": _format_time(row["create_time"]),
             "updateTime": _format_time(row["update_time"]),
         }
+
+    def _select_checkpoint(self, cursor: Any, checkpoint_id: int) -> dict[str, Any] | None:
+        cursor.execute(
+            """
+            SELECT id, checkpoint_name, checkpoint_content, sort_order, enabled, create_time, update_time
+            FROM capability_report_audit_checkpoint WHERE id = %s
+            """,
+            [checkpoint_id],
+        )
+        return cursor.fetchone()
+
+    def _to_checkpoint(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["checkpoint_name"],
+            "content": row["checkpoint_content"],
+            "sortOrder": row["sort_order"],
+            "enabled": bool(row["enabled"]),
+            "createTime": _format_time(row["create_time"]),
+            "updateTime": _format_time(row["update_time"]),
+        }
+
+    def _legacy_conclusion(self, status: str | None) -> str | None:
+        return status if status in {"passed", "failed"} else None
+
+    def _legacy_result_text(self, summary: Any, result_data: Any) -> str | None:
+        parsed_summary = _json_value(summary)
+        parsed_data = _json_value(result_data)
+        if not parsed_summary and not parsed_data:
+            return None
+        lines: list[str] = []
+        if isinstance(parsed_summary, dict):
+            conclusion = parsed_summary.get("结论")
+            if conclusion:
+                lines.append(f"审核结论：{conclusion}")
+            suggestion = parsed_summary.get("建议")
+            if suggestion:
+                lines.extend(["", "## 审核总结", str(suggestion)])
+        items = parsed_data.get("data", []) if isinstance(parsed_data, dict) else []
+        if items:
+            lines.extend(["", "## 检查点结果"])
+            for item in items:
+                lines.extend([f"### {item.get('检查点', '检查点')}", str(item.get("分析结果", ""))])
+        return "\n\n".join(part for part in lines if part != "")

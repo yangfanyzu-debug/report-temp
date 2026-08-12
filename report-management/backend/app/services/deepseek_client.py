@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Iterable
@@ -21,7 +22,7 @@ class DeepSeekClient:
         prompt: dict[str, Any],
         audit_input: dict[str, Any],
         on_delta: Callable[[str], None] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, str]:
         api_url = prompt.get("apiUrl") or self.settings.deepseek_url
         api_key = prompt.get("apiKey") or self.settings.deepseek_key
         model_name = prompt.get("modelName") or self.settings.deepseek_model
@@ -31,10 +32,16 @@ class DeepSeekClient:
         request_payload = {
             "model": model_name,
             "messages": [
-                {"role": "system", "content": prompt["promptContent"]},
+                {
+                    "role": "system",
+                    "content": prompt["promptContent"]
+                    + "\n\n【本次输出协议】不要输出 JSON。首行必须是“审核结论：通过”或“审核结论：不通过”；"
+                    "后续使用中文 Markdown 输出审核总结、发现的问题和修改建议。此协议优先于上文中的旧输出格式要求。",
+                },
                 {
                     "role": "user",
-                    "content": "请审核以下报告内容并只输出 JSON：\n"
+                    "content": "请根据检查点审核以下报告。首行必须是“审核结论：通过”或“审核结论：不通过”；"
+                    "之后使用中文 Markdown 输出审核总结、发现的问题和修改建议，不要输出 JSON。\n"
                     + json.dumps(audit_input, ensure_ascii=False),
                 },
             ],
@@ -58,7 +65,7 @@ class DeepSeekClient:
 
         if not content:
             raise RuntimeError("大模型未返回审核内容")
-        return parse_model_json(content)
+        return parse_model_result(content)
 
 
 def chat_completions_url(base_url: str) -> str:
@@ -90,28 +97,10 @@ def parse_chat_stream(
     return "".join(content_parts)
 
 
-def parse_model_json(content: str) -> dict[str, Any]:
+def parse_model_result(content: str) -> dict[str, str]:
     cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
-    parsed = json.loads(cleaned)
-    validate_audit_result(parsed)
-    return parsed
-
-
-def validate_audit_result(result: dict[str, Any]) -> None:
-    if not isinstance(result, dict):
-        raise ValueError("模型输出不是 JSON 对象")
-    summary = result.get("summary")
-    data = result.get("data")
-    if not isinstance(summary, dict):
-        raise ValueError("模型输出缺少 summary 对象")
-    if summary.get("结论") not in {"通过", "不通过"}:
-        raise ValueError("summary.结论 必须是 通过 或 不通过")
-    if not isinstance(data, list):
-        raise ValueError("模型输出缺少 data 数组")
-    for item in data:
-        if not isinstance(item, dict) or "检查点" not in item or "分析结果" not in item:
-            raise ValueError("data 数组元素必须包含 检查点 和 分析结果")
+    if not cleaned:
+        raise ValueError("模型输出为空")
+    match = re.search(r"审核结论\s*[：:]\s*(不通过|通过)", cleaned[:300])
+    conclusion = {"通过": "passed", "不通过": "failed"}.get(match.group(1), "completed") if match else "completed"
+    return {"resultText": cleaned, "conclusion": conclusion}

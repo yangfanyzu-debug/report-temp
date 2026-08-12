@@ -14,8 +14,7 @@ from app.services.audit_worker import AuditWorker  # noqa: E402
 from app.services.deepseek_client import (  # noqa: E402
     chat_completions_url,
     parse_chat_stream,
-    parse_model_json,
-    validate_audit_result,
+    parse_model_result,
 )
 
 
@@ -41,6 +40,8 @@ class FakeAuditRepository:
         self.completed = []
         self.errors = []
         self.events = []
+        self.checkpoints = [{"id": 1, "name": "章节完整性", "content": "检查章节", "sortOrder": 10, "enabled": True}]
+        self.snapshots = []
 
     def next_pending_audit(self):
         return self.job
@@ -50,6 +51,12 @@ class FakeAuditRepository:
 
     def mark_audit_running(self, audit_id, prompt):
         self.running.append((audit_id, prompt["version"]))
+
+    def get_active_checkpoints(self):
+        return self.checkpoints
+
+    def save_checkpoint_snapshot(self, audit_id, checkpoints):
+        self.snapshots.append((audit_id, checkpoints))
 
     def mark_audit_complete(self, audit_id, version_id, result):
         self.completed.append((audit_id, version_id, result))
@@ -65,16 +72,16 @@ class FakeAuditRepository:
 class FakeModelClient:
     def __init__(self, result=None):
         self.result = result or {
-            "summary": {"结论": "通过", "问题数量": 0, "建议": "无明显问题"},
-            "data": [{"检查点": "章节完整性", "分析结果": "内容完整"}],
+            "resultText": "审核结论：通过\n\n## 审核总结\n未发现明显问题。",
+            "conclusion": "passed",
         }
         self.calls = []
 
     def audit_report(self, prompt, audit_input, on_delta=None):
         self.calls.append((prompt, audit_input))
         if on_delta:
-            on_delta('{"summary":{"结论":"通过"},')
-            on_delta('"data":[]}')
+            on_delta("审核结论：通过\n")
+            on_delta("未发现明显问题。")
         return self.result
 
 
@@ -98,18 +105,10 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertIn("性能容量报告", audit_input["document"]["paragraphs"])
         self.assertEqual(audit_input["document"]["tables"][0][1], ["ES", "14"])
 
-    def test_parse_model_json_accepts_plain_and_fenced_json(self):
-        plain = '{"summary":{"结论":"通过","问题数量":0,"建议":"无明显问题"},"data":[{"检查点":"A","分析结果":"B"}]}'
-        fenced = f"```json\n{plain}\n```"
-
-        self.assertEqual(parse_model_json(plain)["summary"]["结论"], "通过")
-        self.assertEqual(parse_model_json(fenced)["data"][0]["检查点"], "A")
-
-    def test_validate_audit_result_rejects_invalid_shape(self):
-        with self.assertRaises(ValueError):
-            validate_audit_result({"summary": {"结论": "未知"}, "data": []})
-        with self.assertRaises(ValueError):
-            validate_audit_result({"summary": {"结论": "通过"}, "data": [{"检查点": "A"}]})
+    def test_parse_model_result_extracts_optional_conclusion(self):
+        self.assertEqual(parse_model_result("审核结论：通过\n内容完整")["conclusion"], "passed")
+        self.assertEqual(parse_model_result("审核结论：不通过\n存在问题")["conclusion"], "failed")
+        self.assertEqual(parse_model_result("审核工作已经完成")["conclusion"], "completed")
 
     def test_chat_completions_url_accepts_base_or_full_url(self):
         self.assertEqual(
@@ -158,6 +157,7 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "completed"})
         self.assertEqual(repository.running, [(99, 2)])
         self.assertEqual(repository.completed[0][0:2], (99, 10))
+        self.assertEqual(repository.snapshots[0][1][0]["name"], "章节完整性")
         self.assertEqual(model_client.calls[0][1]["report"]["systemId"], "credit-card-center")
         self.assertEqual(repository.events[0][2], "started")
         self.assertTrue(any(event[1] == "model" for event in repository.events))

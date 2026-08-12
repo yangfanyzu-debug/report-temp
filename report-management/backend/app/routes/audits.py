@@ -42,3 +42,13 @@ def get_audit_events(audit_id: int):
     )
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@audits.get("/reports/<int:report_id>/conversation")
+def get_report_conversation(report_id: int):
+    conversation = _repository().get_report_conversation(report_id)
+    if conversation is None:
+        return jsonify({"message": "未找到该报告"}), 404
+    response = jsonify(conversation)
+    response.headers["Cache-Control"] = "no-store"
+    return response

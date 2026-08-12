@@ -100,7 +100,9 @@ class MySqlReportRepository:
                       latest_version.version_type AS latest_version_type,
                       latest_version.audit_status AS latest_audit_status,
                       latest_audit.id AS latest_audit_id,
-                      latest_audit.summary AS latest_audit_summary
+                      latest_audit.summary AS latest_audit_summary,
+                      latest_audit.result_text AS latest_audit_result_text,
+                      latest_audit.conclusion AS latest_audit_conclusion
                     FROM capability_report_log report
                     {latest_version_join}
                     {latest_audit_join}
@@ -140,7 +142,9 @@ class MySqlReportRepository:
                       version.source,
                       version.create_time,
                       latest_audit.id AS latest_audit_id,
-                      latest_audit.summary AS latest_audit_summary
+                      latest_audit.summary AS latest_audit_summary,
+                      latest_audit.result_text AS latest_audit_result_text,
+                      latest_audit.conclusion AS latest_audit_conclusion
                     FROM capability_report_version version
                     LEFT JOIN capability_report_audit latest_audit
                       ON latest_audit.version_id = version.id
@@ -332,8 +336,8 @@ class MySqlReportRepository:
             "latestVersionType": row["latest_version_type"],
             "latestAuditId": row["latest_audit_id"],
             "latestAuditStatus": row["latest_audit_status"] or "pending",
-            "latestAuditConclusion": _summary_text(row["latest_audit_summary"], "结论"),
-            "latestAuditSuggestion": _summary_text(row["latest_audit_summary"], "建议"),
+            "latestAuditConclusion": self._audit_conclusion(row),
+            "latestAuditSuggestion": self._audit_suggestion(row),
             "createTime": _format_time(row["create_time"]),
         }
 
@@ -349,5 +353,19 @@ class MySqlReportRepository:
             "source": row["source"],
             "createTime": _format_time(row["create_time"]),
             "latestAuditId": row["latest_audit_id"],
-            "latestAuditConclusion": _summary_text(row["latest_audit_summary"], "结论"),
+            "latestAuditConclusion": self._audit_conclusion(row),
         }
+
+    def _audit_conclusion(self, row: dict[str, Any]) -> str:
+        conclusion = row.get("latest_audit_conclusion")
+        if conclusion:
+            return {"passed": "通过", "failed": "不通过", "completed": "已完成"}.get(conclusion, str(conclusion))
+        return _summary_text(row.get("latest_audit_summary"), "结论")
+
+    def _audit_suggestion(self, row: dict[str, Any]) -> str:
+        legacy = _summary_text(row.get("latest_audit_summary"), "建议")
+        if legacy:
+            return legacy
+        result_text = str(row.get("latest_audit_result_text") or "").strip()
+        lines = [line.strip("# -*") for line in result_text.splitlines() if line.strip()]
+        return next((line for line in lines if not line.startswith("审核结论")), "")[:160]

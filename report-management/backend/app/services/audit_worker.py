@@ -29,7 +29,9 @@ class AuditWorker:
             if not Path(job["filePath"]).is_file():
                 raise FileNotFoundError("报告文件不存在")
             self.repository.append_audit_event(job["auditId"], "system", "extracting", "正在解析DOCX中的章节、正文和表格")
-            audit_input = build_audit_input(job)
+            checkpoints = self.repository.get_active_checkpoints()
+            self.repository.save_checkpoint_snapshot(job["auditId"], checkpoints)
+            audit_input = build_audit_input(job, checkpoints)
             paragraph_count = len(audit_input["document"].get("paragraphs", []))
             table_count = len(audit_input["document"].get("tables", []))
             self.repository.append_audit_event(
@@ -66,9 +68,9 @@ class AuditWorker:
                 self.repository.append_audit_event(
                     job["auditId"], "model", "streaming", "".join(pending_chunks)
                 )
-            self.repository.append_audit_event(job["auditId"], "system", "validating", "模型输出完成，正在校验审核结果")
+            self.repository.append_audit_event(job["auditId"], "system", "saving", "模型输出完成，正在保存审核结果")
             self.repository.mark_audit_complete(job["auditId"], job["versionId"], result)
-            conclusion = result["summary"].get("结论", "已完成")
+            conclusion = {"passed": "通过", "failed": "不通过", "completed": "已完成"}.get(result["conclusion"], "已完成")
             self.repository.append_audit_event(job["auditId"], "result", "completed", f"AI审核完成：{conclusion}")
             return {"processed": True, "auditId": job["auditId"], "status": "completed"}
         except Exception as error:

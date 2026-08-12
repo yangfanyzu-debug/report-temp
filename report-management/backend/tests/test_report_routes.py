@@ -105,6 +105,35 @@ class FakeReportRepository:
                 "createTime": "2026-08-11 11:20:03",
             },
         ]
+        self.checkpoints = [
+            {
+                "id": 1,
+                "name": "章节完整性",
+                "content": "检测章节是否空缺",
+                "sortOrder": 10,
+                "enabled": True,
+                "createTime": "2026-08-11 10:00:00",
+                "updateTime": "2026-08-11 10:00:00",
+            }
+        ]
+        self.conversation = {
+            "reportId": 1,
+            "systemId": "credit-card-center",
+            "title": "中信银行信用卡中心授权交易资源分析报告",
+            "reportMonth": "2025年08月",
+            "jiraId": "JIRA-10086",
+            "versions": [
+                {
+                    "versionId": 10,
+                    "versionNo": 2,
+                    "fileName": "修订版.docx",
+                    "auditId": 99,
+                    "auditStatus": "failed",
+                    "resultText": "审核结论：不通过\n请修正服务器数量。",
+                    "conclusion": "failed",
+                }
+            ],
+        }
 
     def list_reports(self, filters, page_num, page_size):
         self.last_filters = filters
@@ -184,6 +213,24 @@ class FakeReportRepository:
             "createTime": "2026-08-11 12:00:00",
             "updateTime": "2026-08-11 12:00:00",
         }
+
+    def list_checkpoints(self):
+        return self.checkpoints
+
+    def create_checkpoint(self, payload):
+        checkpoint = {"id": 2, **payload, "createTime": "2026-08-11 12:00:00", "updateTime": "2026-08-11 12:00:00"}
+        self.checkpoints.append(checkpoint)
+        return checkpoint
+
+    def update_checkpoint(self, checkpoint_id, payload):
+        if checkpoint_id != 1:
+            return None
+        checkpoint = {"id": checkpoint_id, **payload, "createTime": "2026-08-11 10:00:00", "updateTime": "2026-08-11 12:00:00"}
+        self.checkpoints[0] = checkpoint
+        return checkpoint
+
+    def get_report_conversation(self, report_id):
+        return self.conversation if report_id == 1 else None
 
 
 class ReportRoutesTest(unittest.TestCase):
@@ -363,6 +410,31 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json, {"message": "afterId 必须是整数"})
+
+    def test_get_report_conversation(self):
+        response = self.client.get("/api/report-management/audits/reports/1/conversation")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["versions"][0]["resultText"].splitlines()[0], "审核结论：不通过")
+
+    def test_manage_audit_checkpoints(self):
+        listed = self.client.get("/api/report-management/audit-checkpoints")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json["rows"][0]["name"], "章节完整性")
+
+        created = self.client.post(
+            "/api/report-management/audit-checkpoints",
+            json={"name": "指标检查", "content": "检查指标是否异常", "sortOrder": 20, "enabled": True},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json["id"], 2)
+
+        updated = self.client.put(
+            "/api/report-management/audit-checkpoints/1",
+            json={"name": "章节检查", "content": "检查章节内容", "sortOrder": 5, "enabled": False},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertFalse(updated.json["enabled"])
 
     def test_get_active_prompt(self):
         response = self.client.get("/api/report-management/audit-prompts/active")
