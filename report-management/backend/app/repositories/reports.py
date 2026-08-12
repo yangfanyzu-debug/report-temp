@@ -57,6 +57,31 @@ def _summary_text(summary: Any, key: str) -> str:
     return ""
 
 
+def _audit_result_summary(result_text: Any) -> str:
+    text = str(result_text or "").strip()
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines()]
+    summary_heading_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.lstrip("#").strip() in {"审核总结", "总结"}
+        ),
+        None,
+    )
+    candidates = lines[summary_heading_index + 1 :] if summary_heading_index is not None else lines
+    for line in candidates:
+        if summary_heading_index is not None and line.startswith("#"):
+            break
+        content = line.lstrip("# -*").strip()
+        if not content or line.startswith("#") or content.startswith("审核结论"):
+            continue
+        return content[:160]
+    return ""
+
+
 class MySqlReportRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -366,6 +391,4 @@ class MySqlReportRepository:
         legacy = _summary_text(row.get("latest_audit_summary"), "建议")
         if legacy:
             return legacy
-        result_text = str(row.get("latest_audit_result_text") or "").strip()
-        lines = [line.strip("# -*") for line in result_text.splitlines() if line.strip()]
-        return next((line for line in lines if not line.startswith("审核结论")), "")[:160]
+        return _audit_result_summary(row.get("latest_audit_result_text"))
