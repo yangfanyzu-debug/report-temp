@@ -47,6 +47,9 @@ class AuditRepository(Protocol):
     def create_agent_exchange(self, report_id: int, version_id: int, content: str) -> dict[str, Any] | None:
         ...
 
+    def retry_version_audit(self, report_id: int, version_id: int) -> dict[str, Any] | None:
+        ...
+
     def next_pending_agent_message(self) -> dict[str, Any] | None:
         ...
 
@@ -107,6 +110,68 @@ def _mask_secret(value: str | None) -> str:
 class MySqlAuditRepository:
     def __init__(self, database: Database):
         self.database = database
+
+    def retry_version_audit(self, report_id: int, version_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT version.id
+                      FROM capability_report_version version
+                     WHERE version.id = %s AND version.report_id = %s
+                     FOR UPDATE
+                    """,
+                    [version_id, report_id],
+                )
+                if cursor.fetchone() is None:
+                    return None
+                cursor.execute(
+                    """
+                    SELECT id, status
+                      FROM capability_report_audit
+                     WHERE version_id = %s
+                     ORDER BY create_time DESC, id DESC
+                     LIMIT 1
+                    """,
+                    [version_id],
+                )
+                latest = cursor.fetchone()
+                if latest and latest["status"] in {"pending", "running"}:
+                    return {
+                        "reportId": report_id,
+                        "versionId": version_id,
+                        "auditId": int(latest["id"]),
+                        "auditStatus": latest["status"],
+                        "created": False,
+                    }
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_audit
+                      (`report_id`, `version_id`, `status`, `summary`, `result_data`)
+                    VALUES (%s, %s, 'pending', NULL, NULL)
+                    """,
+                    [report_id, version_id],
+                )
+                audit_id = int(cursor.lastrowid)
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_audit_event
+                      (`audit_id`, `event_type`, `phase`, `content`)
+                    VALUES (%s, 'system', 'queued', '用户重新发起AI审核，等待后台处理')
+                    """,
+                    [audit_id],
+                )
+                cursor.execute(
+                    "UPDATE capability_report_version SET audit_status = 'pending' WHERE id = %s",
+                    [version_id],
+                )
+        return {
+            "reportId": report_id,
+            "versionId": version_id,
+            "auditId": audit_id,
+            "auditStatus": "pending",
+            "created": True,
+        }
 
     def get_audit_detail(self, audit_id: int) -> dict[str, Any] | None:
         with self.database.connection() as connection:

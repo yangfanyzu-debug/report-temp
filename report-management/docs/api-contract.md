@@ -38,7 +38,7 @@ GET /api/report-management/reports
 | `systemId` | string | 否 | 系统编码模糊查询 |
 | `title` | string | 否 | 标题模糊查询 |
 | `reportMonth` | string | 否 | 报表月份，格式 `YYYY年MM月` |
-| `auditStatus` | string | 否 | 最新版本最新审核状态 |
+| `auditStatus` | string | 否 | 最新版本最新审核状态；`processing` 表示待审核或审核中 |
 | `pageNum` | integer | 否 | 默认 1 |
 | `pageSize` | integer | 否 | 默认 10 |
 
@@ -211,6 +211,26 @@ Content-Type: multipart/form-data
   "versionNo": 2,
   "auditId": 99,
   "auditStatus": "pending"
+}
+```
+
+## 重新发起版本审核
+
+仅在当前版本没有待审核或审核中任务时创建新的异步审核记录。重复点击时返回已有任务，不重复创建。
+
+```text
+POST /api/report-management/audits/reports/{reportId}/versions/{versionId}/retry
+```
+
+响应：
+
+```json
+{
+  "reportId": 1,
+  "versionId": 10,
+  "auditId": 101,
+  "auditStatus": "pending",
+  "created": true
 }
 ```
 

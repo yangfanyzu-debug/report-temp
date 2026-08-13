@@ -123,11 +123,14 @@ class MySqlReportRepository:
                       latest_version.id AS latest_version_id,
                       latest_version.version_no AS latest_version_no,
                       latest_version.version_type AS latest_version_type,
+                      latest_version.uploader AS latest_version_uploader,
+                      latest_version.create_time AS latest_version_create_time,
                       latest_version.audit_status AS latest_audit_status,
                       latest_audit.id AS latest_audit_id,
                       latest_audit.summary AS latest_audit_summary,
                       latest_audit.result_text AS latest_audit_result_text,
-                      latest_audit.conclusion AS latest_audit_conclusion
+                      latest_audit.conclusion AS latest_audit_conclusion,
+                      latest_audit.error_message AS latest_audit_error_message
                     FROM capability_report_log report
                     {latest_version_join}
                     {latest_audit_join}
@@ -169,7 +172,8 @@ class MySqlReportRepository:
                       latest_audit.id AS latest_audit_id,
                       latest_audit.summary AS latest_audit_summary,
                       latest_audit.result_text AS latest_audit_result_text,
-                      latest_audit.conclusion AS latest_audit_conclusion
+                      latest_audit.conclusion AS latest_audit_conclusion,
+                      latest_audit.error_message AS latest_audit_error_message
                     FROM capability_report_version version
                     LEFT JOIN capability_report_audit latest_audit
                       ON latest_audit.version_id = version.id
@@ -179,7 +183,7 @@ class MySqlReportRepository:
                           WHERE inner_audit.version_id = version.id
                      )
                     WHERE version.report_id = %s
-                    ORDER BY version.version_no ASC
+                    ORDER BY version.version_no DESC
                     """,
                     [report_id],
                 )
@@ -335,8 +339,11 @@ class MySqlReportRepository:
             clauses.append("report.report_month = %s")
             params.append(filters["reportMonth"])
         if filters.get("auditStatus"):
-            clauses.append("latest_version.audit_status = %s")
-            params.append(filters["auditStatus"])
+            if filters["auditStatus"] == "processing":
+                clauses.append("latest_version.audit_status IN ('pending', 'running')")
+            else:
+                clauses.append("latest_version.audit_status = %s")
+                params.append(filters["auditStatus"])
         return (f"WHERE {' AND '.join(clauses)}" if clauses else "", params)
 
     def _create_pending_audit(self, cursor: Any, report_id: int, version_id: int) -> int:
@@ -369,6 +376,8 @@ class MySqlReportRepository:
             "latestVersionId": row["latest_version_id"],
             "latestVersionNo": row["latest_version_no"],
             "latestVersionType": row["latest_version_type"],
+            "latestVersionUploader": row.get("latest_version_uploader"),
+            "latestVersionCreateTime": _format_time(row.get("latest_version_create_time")),
             "latestAuditId": row["latest_audit_id"],
             "latestAuditStatus": row["latest_audit_status"] or "pending",
             "latestAuditConclusion": self._audit_conclusion(row),
@@ -389,6 +398,8 @@ class MySqlReportRepository:
             "createTime": _format_time(row["create_time"]),
             "latestAuditId": row["latest_audit_id"],
             "latestAuditConclusion": self._audit_conclusion(row),
+            "latestAuditSuggestion": self._audit_suggestion(row),
+            "latestAuditErrorMessage": row.get("latest_audit_error_message"),
         }
 
     def _audit_conclusion(self, row: dict[str, Any]) -> str:

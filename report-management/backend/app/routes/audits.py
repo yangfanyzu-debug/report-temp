@@ -54,6 +54,14 @@ def get_report_conversation(report_id: int):
     return response
 
 
+@audits.post("/reports/<int:report_id>/versions/<int:version_id>/retry")
+def retry_version_audit(report_id: int, version_id: int):
+    result = _repository().retry_version_audit(report_id, version_id)
+    if result is None:
+        return jsonify({"message": "未找到该报告版本"}), 404
+    return jsonify(result), 202
+
+
 @audits.get("/reports/<int:report_id>/versions/<int:version_id>/messages")
 def list_agent_messages(report_id: int, version_id: int):
     messages = _repository().list_agent_messages(report_id, version_id)

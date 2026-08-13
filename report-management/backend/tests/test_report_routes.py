@@ -149,6 +149,13 @@ class FakeReportRepository:
             }
         ]
         self.created_agent_exchange = None
+        self.retry_result = {
+            "reportId": 1,
+            "versionId": 10,
+            "auditId": 101,
+            "auditStatus": "pending",
+            "created": True,
+        }
 
     def list_reports(self, filters, page_num, page_size):
         self.last_filters = filters
@@ -256,6 +263,11 @@ class FakeReportRepository:
         self.created_agent_exchange = (report_id, version_id, content)
         return {"userMessageId": 2, "assistantMessageId": 3, "status": "pending"}
 
+    def retry_version_audit(self, report_id, version_id):
+        if report_id != 1 or version_id != 10:
+            return None
+        return self.retry_result
+
 
 class ReportRoutesTest(unittest.TestCase):
     def setUp(self):
@@ -310,6 +322,14 @@ class ReportRoutesTest(unittest.TestCase):
             },
         )
         self.assertEqual(self.repository.last_page, (2, 20))
+
+    def test_processing_filter_builds_pending_and_running_clause(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        where, params = MySqlReportRepository(None)._build_filters({"auditStatus": "processing"})
+
+        self.assertIn("audit_status IN ('pending', 'running')", where)
+        self.assertEqual(params, [])
 
     def test_get_report_detail(self):
         response = self.client.get("/api/report-management/reports/1")
@@ -514,6 +534,19 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["versions"][0]["resultText"].splitlines()[0], "审核结论：不通过")
+
+    def test_retry_version_audit(self):
+        response = self.client.post("/api/report-management/audits/reports/1/versions/10/retry")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["auditStatus"], "pending")
+        self.assertTrue(response.json["created"])
+
+    def test_retry_version_audit_returns_404_for_missing_version(self):
+        response = self.client.post("/api/report-management/audits/reports/1/versions/999/retry")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json, {"message": "未找到该报告版本"})
 
     def test_list_and_create_agent_messages(self):
         listed = self.client.get("/api/report-management/audits/reports/1/versions/10/messages")
