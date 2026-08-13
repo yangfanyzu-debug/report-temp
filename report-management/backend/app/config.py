@@ -7,11 +7,13 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_UPLOAD_DIR = PROJECT_ROOT / "storage" / "uploaded_reports"
+DEFAULT_INITIAL_REPORT_DIR = PROJECT_ROOT / "storage" / "initial_reports"
 
 
 @dataclass(frozen=True)
 class Settings:
     upload_dir: Path
+    initial_report_dir: Path
     public_api_prefix: str
     mysql_host: str
     mysql_port: int
@@ -33,6 +35,9 @@ def load_settings() -> Settings:
     model = os.environ.get("ARK_MODEL", os.environ.get("DEEPSEEK_MODEL", "ark-code-latest"))
     return Settings(
         upload_dir=Path(os.environ.get("REPORT_UPLOAD_DIR", str(DEFAULT_UPLOAD_DIR))),
+        initial_report_dir=Path(
+            os.environ.get("REPORT_INITIAL_REPORT_DIR", str(DEFAULT_INITIAL_REPORT_DIR))
+        ),
         public_api_prefix=os.environ.get("REPORT_PUBLIC_API_PREFIX", "/api/report-management"),
         mysql_host=os.environ.get("REPORT_MYSQL_HOST", "127.0.0.1"),
         mysql_port=int(os.environ.get("REPORT_MYSQL_PORT", "3306")),

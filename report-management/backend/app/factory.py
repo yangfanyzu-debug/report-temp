@@ -20,6 +20,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.config.from_mapping(
         SETTINGS=settings,
         UPLOAD_DIR=str(settings.upload_dir),
+        INITIAL_REPORT_DIR=str(settings.initial_report_dir),
         PUBLIC_API_PREFIX=settings.public_api_prefix,
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
     )

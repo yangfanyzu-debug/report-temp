@@ -142,6 +142,50 @@ POST /api/report-management/reports/register
 }
 ```
 
+## 上传并登记初始报告
+
+供跑批任务与报告中心不在同一台服务器时调用。每份报告单独请求；接口将 DOCX 保存到报告中心的初始报告目录，再登记初始版本并创建异步审核任务。
+
+同一个 `systemId + title + reportMonth` 已存在时，不新增报告或初始版本，但会将初始版本更新为本次上传的文件并重新创建审核任务。服务端使用唯一存储文件名，不会覆盖之前上传的同名文件。
+
+```text
+POST /api/report-management/reports/register-upload
+Content-Type: multipart/form-data
+```
+
+表单字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | file | 是 | DOCX 文件，当前服务统一限制不超过 50 MB |
+| `systemId` | string | 是 | 系统编码 |
+| `title` | string | 是 | 中文报告标题 |
+| `reportMonth` | string | 是 | 报表月份，格式 `YYYY年MM月` |
+| `jiraId` | string | 否 | JIRA 任务号 |
+| `source` | string | 否 | 默认 `batch` |
+
+调用示例：
+
+```bash
+curl -X POST http://localhost:5010/api/report-management/reports/register-upload \
+  -F 'file=@/path/to/性能容量报告.docx' \
+  -F 'systemId=credit-card-center' \
+  -F 'title=中信银行信用卡中心授权交易资源分析报告' \
+  -F 'reportMonth=2025年08月' \
+  -F 'jiraId=容量审核-202508-001'
+```
+
+响应与 `POST /reports/register` 一致：
+
+```json
+{
+  "reportId": 1,
+  "versionId": 9,
+  "auditId": 88,
+  "auditStatus": "pending"
+}
+```
+
 ## 上传新版本并发起审核
 
 同名文件不得覆盖旧文件。后端必须生成新的服务端文件名和新的版本号。

@@ -199,8 +199,10 @@ class MySqlReportRepository:
 
     def register_initial_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         file_path = payload["filePath"]
-        file_name = Path(file_path).name
-        file_size = Path(file_path).stat().st_size if Path(file_path).is_file() else 0
+        file_name = payload.get("fileName") or Path(file_path).name
+        file_size = payload.get("fileSize")
+        if file_size is None:
+            file_size = Path(file_path).stat().st_size if Path(file_path).is_file() else 0
         report_data = json.dumps({"data": file_path, "type": "file"}, ensure_ascii=False)
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
@@ -228,17 +230,25 @@ class MySqlReportRepository:
                 if existing_version:
                     version_id = int(existing_version["id"])
                     cursor.execute(
-                        "UPDATE capability_report_version SET audit_status = 'pending' WHERE id = %s",
-                        [version_id],
+                        """
+                        UPDATE capability_report_version
+                           SET file_name = %s,
+                               file_path = %s,
+                               file_size = %s,
+                               audit_status = 'pending',
+                               source = %s
+                         WHERE id = %s
+                        """,
+                        [file_name, file_path, file_size, payload.get("source", "batch"), version_id],
                     )
                 else:
                     cursor.execute(
                         """
                         INSERT INTO capability_report_version
                           (`report_id`, `version_no`, `version_type`, `file_name`, `file_path`, `file_size`, `audit_status`, `uploader`, `source`)
-                        VALUES (%s, 1, 'initial', %s, %s, %s, 'pending', '批次任务', 'batch')
+                        VALUES (%s, 1, 'initial', %s, %s, %s, 'pending', '批次任务', %s)
                         """,
-                        [report_id, file_name, file_path, file_size],
+                        [report_id, file_name, file_path, file_size, payload.get("source", "batch")],
                     )
                     version_id = int(cursor.lastrowid)
                 audit_id = self._create_pending_audit(cursor, report_id, version_id)

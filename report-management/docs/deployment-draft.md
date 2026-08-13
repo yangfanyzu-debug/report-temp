@@ -8,6 +8,7 @@
 
 ```text
 /opt/report-management/backend
+/appdata/report-management/initial_reports
 /appdata/report-management/uploaded_reports
 ```
 

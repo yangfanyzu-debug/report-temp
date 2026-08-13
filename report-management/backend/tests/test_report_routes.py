@@ -260,6 +260,7 @@ class FakeReportRepository:
 class ReportRoutesTest(unittest.TestCase):
     def setUp(self):
         self.storage = tempfile.TemporaryDirectory()
+        self.initial_report_dir = Path(self.storage.name) / "initial_reports"
         self.repository = FakeReportRepository()
         self.preview_path = Path(self.storage.name) / "preview.docx"
         self.preview_path.write_bytes(make_docx("预览内容").getvalue())
@@ -273,6 +274,7 @@ class ReportRoutesTest(unittest.TestCase):
                 "TESTING": True,
                 "REPORT_REPOSITORY": self.repository,
                 "UPLOAD_DIR": self.storage.name,
+                "INITIAL_REPORT_DIR": str(self.initial_report_dir),
             }
         )
         self.client = self.app.test_client()
@@ -344,6 +346,78 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("缺少必要参数", response.json["message"])
+
+    def test_upload_and_register_initial_report(self):
+        response = self.client.post(
+            "/api/report-management/reports/register-upload",
+            data={
+                "file": (make_docx(), "性能容量报告.docx"),
+                "systemId": "credit-card-center",
+                "title": "中信银行信用卡中心授权交易资源分析报告",
+                "reportMonth": "2025年08月",
+                "jiraId": "容量审核-测试-001",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["auditStatus"], "pending")
+        payload = self.repository.registered_payload
+        self.assertEqual(payload["source"], "batch")
+        self.assertEqual(payload["jiraId"], "容量审核-测试-001")
+        self.assertEqual(payload["fileName"], "性能容量报告.docx")
+        self.assertGreater(payload["fileSize"], 0)
+        saved_path = Path(payload["filePath"])
+        self.assertTrue(saved_path.is_file())
+        self.assertEqual(saved_path.parent, self.initial_report_dir)
+        self.assertNotEqual(saved_path.name, "性能容量报告.docx")
+        self.assertIn("_v1_", saved_path.name)
+
+    def test_upload_and_register_initial_report_uses_unique_server_names(self):
+        paths = []
+        for _ in range(2):
+            response = self.client.post(
+                "/api/report-management/reports/register-upload",
+                data={
+                    "file": (make_docx(), "同名报告.docx"),
+                    "systemId": "credit-card-center",
+                    "title": "同名报告",
+                    "reportMonth": "2025年08月",
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 201)
+            paths.append(Path(self.repository.registered_payload["filePath"]))
+
+        self.assertNotEqual(paths[0], paths[1])
+        self.assertTrue(all(path.is_file() for path in paths))
+
+    def test_upload_and_register_initial_report_rejects_missing_fields_before_saving(self):
+        response = self.client.post(
+            "/api/report-management/reports/register-upload",
+            data={"file": (make_docx(), "报告.docx"), "systemId": "credit-card-center"},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("缺少必要参数", response.json["message"])
+        self.assertFalse(self.initial_report_dir.exists())
+
+    def test_upload_and_register_initial_report_rejects_invalid_docx(self):
+        response = self.client.post(
+            "/api/report-management/reports/register-upload",
+            data={
+                "file": (io.BytesIO(b"not docx"), "报告.docx"),
+                "systemId": "credit-card-center",
+                "title": "测试报告",
+                "reportMonth": "2025年08月",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json, {"message": "文件内容不是有效的 DOCX 文档"})
+        self.assertEqual(list(self.initial_report_dir.iterdir()), [])
 
     def test_upload_report_version_creates_versioned_file(self):
         response = self.client.post(

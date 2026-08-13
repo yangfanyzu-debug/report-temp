@@ -70,6 +70,59 @@ def register_initial_report():
     return jsonify(result), 201
 
 
+@reports.post("/register-upload")
+def upload_and_register_initial_report():
+    uploaded = request.files.get("file")
+    if uploaded is None or not uploaded.filename:
+        return jsonify({"message": "请选择要上传的 DOCX 文件"}), 400
+
+    required_fields = ["systemId", "title", "reportMonth"]
+    missing = [field for field in required_fields if not request.form.get(field, "").strip()]
+    if missing:
+        return jsonify({"message": f"缺少必要参数：{', '.join(missing)}"}), 400
+
+    system_id = request.form["systemId"].strip()
+    title = request.form["title"].strip()
+    report_month = request.form["reportMonth"].strip()
+    try:
+        original_filename = validate_docx_filename(uploaded.filename)
+    except ValueError as error:
+        return jsonify({"message": str(error)}), 400
+
+    stored_filename = build_versioned_filename(
+        system_id,
+        report_month,
+        1,
+        original_filename,
+    )
+    try:
+        saved_path = save_uploaded_docx(
+            uploaded,
+            Path(current_app.config["INITIAL_REPORT_DIR"]),
+            stored_filename,
+        )
+    except ValueError as error:
+        return jsonify({"message": str(error)}), 400
+
+    try:
+        result = _repository().register_initial_report(
+            {
+                "systemId": system_id,
+                "title": title,
+                "reportMonth": report_month,
+                "filePath": str(saved_path),
+                "fileName": original_filename,
+                "fileSize": saved_path.stat().st_size,
+                "jiraId": request.form.get("jiraId", "").strip(),
+                "source": request.form.get("source", "batch").strip() or "batch",
+            }
+        )
+    except Exception:
+        saved_path.unlink(missing_ok=True)
+        raise
+    return jsonify(result), 201
+
+
 @reports.post("/<int:report_id>/versions")
 def upload_report_version(report_id: int):
     uploaded = request.files.get("file")
