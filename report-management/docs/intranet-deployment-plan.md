@@ -9,8 +9,8 @@
 | RuoYi 前端 | `10.8.64.107` | `ruoyi-ui` 静态资源和 Nginx |
 
 ```text
-10.2.64.36 --上传DOCX--> 10.8.64.110:5010
-浏览器 --> 10.8.64.107 --Nginx代理--> 10.8.64.110:5010
+10.2.64.36 --上传DOCX--> 10.8.64.110:8045
+浏览器 --> 10.8.64.107 --Nginx代理--> 10.8.64.110:8045
 10.8.64.110 --> MySQL / 大模型API
 ```
 
@@ -30,7 +30,7 @@
 ```bash
 python3 --version
 python3 -m pip --version
-ss -lntp | grep ':5010 ' || true
+ss -lntp | grep ':8045 ' || true
 df -h /opt /appdata
 curl -I --connect-timeout 10 '<大模型API地址>' || true
 mysql -h '<MySQL地址>' -P 3306 -u '<MySQL用户>' -p \
@@ -211,6 +211,7 @@ sudo vi /opt/report-management/backend.new/.env
 REPORT_UPLOAD_DIR=/appdata/report-management/uploaded_reports
 REPORT_INITIAL_REPORT_DIR=/appdata/report-management/initial_reports
 REPORT_PUBLIC_API_PREFIX=/report-management-api
+REPORT_PORT=8045
 
 REPORT_MYSQL_HOST=<MySQL地址>
 REPORT_MYSQL_PORT=3306
@@ -253,7 +254,7 @@ sudo mv /opt/report-management/backend.new \
 
 sudo /opt/report-management/report-management.sh start
 sudo /opt/report-management/report-management.sh status
-curl -fsS http://127.0.0.1:5010/health
+curl -fsS http://127.0.0.1:8045/health
 ```
 
 日常只操作一个脚本：
@@ -303,7 +304,7 @@ location /prod-api/report-management-api/ {
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
 
-    proxy_pass http://10.8.64.110:5010/api/report-management/;
+    proxy_pass http://10.8.64.110:8045/api/report-management/;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -332,13 +333,13 @@ docker exec <nginx-container> nginx -s reload
 在 `10.2.64.36` 联调：
 
 ```bash
-curl -fsS http://10.8.64.110:5010/health
+curl -fsS http://10.8.64.110:8045/health
 
 curl --fail --show-error \
   --connect-timeout 10 \
   --max-time 300 \
   -X POST \
-  'http://10.8.64.110:5010/api/report-management/reports/register-upload' \
+  'http://10.8.64.110:8045/api/report-management/reports/register-upload' \
   -F 'file=@/appdata/batch/output/性能容量报告.docx' \
   -F 'systemId=credit-card-center' \
   -F 'title=中信银行信用卡中心授权交易资源分析报告' \
@@ -371,8 +372,8 @@ curl --fail --show-error \
 
 ```bash
 sudo /opt/report-management/report-management.sh status
-curl -fsS http://127.0.0.1:5010/health
-curl -fsS http://127.0.0.1:5010/api/report-management/reports
+curl -fsS http://127.0.0.1:8045/health
+curl -fsS http://127.0.0.1:8045/api/report-management/reports
 tail -n 100 /opt/report-management/backend/logs/api.log
 tail -n 100 /opt/report-management/backend/logs/worker.log
 ```
@@ -380,7 +381,7 @@ tail -n 100 /opt/report-management/backend/logs/worker.log
 在 `10.8.64.107`：
 
 ```bash
-curl -fsS http://10.8.64.110:5010/health
+curl -fsS http://10.8.64.110:8045/health
 curl -fsS http://127.0.0.1/prod-api/report-management-api/reports
 ```
 
@@ -406,7 +407,7 @@ sudo mv /opt/report-management/backend \
 sudo mv /opt/report-management/backend.old \
   /opt/report-management/backend
 sudo /opt/report-management/report-management.sh start
-curl -fsS http://127.0.0.1:5010/health
+curl -fsS http://127.0.0.1:8045/health
 ```
 
 前端回退：

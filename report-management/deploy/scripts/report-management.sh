@@ -68,10 +68,11 @@ stop_process() {
 start_all() {
   load_env
   cd "$APP_DIR"
+  local port="${REPORT_PORT:-8045}"
 
   start_process api "$API_PID_FILE" \
     "$APP_DIR/.venv/bin/gunicorn" \
-    -w 2 -b 0.0.0.0:5010 run:app
+    -w 2 -b "0.0.0.0:$port" run:app
 
   start_process worker "$WORKER_PID_FILE" \
     "$APP_DIR/.venv/bin/python" run_worker.py
