@@ -1,134 +1,300 @@
-# 报告中心内网部署方案
+# 报告中心内网部署执行方案
 
-## 1. 文档目的
+## 1. 部署拓扑
 
-本文档用于指导报告中心在内网环境中的部署和联调。当前采用批次服务器、报告中心服务和 RuoYi 前端分机部署的方式，服务器之间网络已经互通，接口暂不配置 Token。
-
-## 2. 部署范围
-
-| 服务器 | IP | 部署内容 | 主要职责 |
-| --- | --- | --- | --- |
-| 批次服务器 | `10.2.64.36` | 现有跑批任务 | 生成 DOCX，并调用上传登记接口 |
-| 报告中心服务器 | `10.8.64.110` | Python API、AI 审核 Worker、报告文件目录 | 文件存储、报告管理、异步 AI 审核、数据库访问 |
-| 前端服务器 | `10.8.64.107` | `ruoyi-ui`、Nginx | 提供报告管理页面并反向代理报告中心 API |
-
-MySQL 地址沿用实际内网数据库配置，只要求 `10.8.64.110` 可以访问。批次服务器和前端服务器不直接连接报告数据库。
-
-## 3. 总体架构
+| 服务器 | IP | 部署内容 |
+| --- | --- | --- |
+| 批次服务器 | `10.2.64.36` | 生成 DOCX，调用上传登记接口 |
+| 报告中心 | `10.8.64.110` | Python API、AI Worker、DOCX 文件目录 |
+| RuoYi 前端 | `10.8.64.107` | `ruoyi-ui` 静态资源和 Nginx |
 
 ```text
-                    multipart/form-data
-批次服务器                                   报告中心服务器
-10.2.64.36  --------------------------------> 10.8.64.110:5010
-生成 DOCX                                    Python API
-                                             AI 审核 Worker
-                                             DOCX 文件目录
-                                             MySQL / 大模型接口
-                                                     ^
-                                                     |
-                                           HTTP 反向代理
-                                                     |
-用户浏览器  ------------------------------> 10.8.64.107
-                                           ruoyi-ui + Nginx
+10.2.64.36 --上传DOCX--> 10.8.64.110:5010
+浏览器 --> 10.8.64.107 --Nginx代理--> 10.8.64.110:5010
+10.8.64.110 --> MySQL / 大模型API
 ```
 
-核心原则：
+服务器之间网络互通，接口不配置 Token。本方案不创建 systemd 服务，使用一个管理脚本统一启停 API 和 Worker。
 
-- 批次上传流量直接进入 `10.8.64.110`，不经过前端服务器。
-- 浏览器统一访问 `10.8.64.107`，报告接口由 Nginx 转发至 `10.8.64.110`。
-- 初始报告和人工上传版本均保存在报告中心服务器。
-- 报告登记成功后立即返回，AI 审核由 Worker 异步完成。
-- 报告唯一标识为 `systemId + title + report_month`。
-- 同名文件使用唯一服务端文件名保存，不覆盖历史版本。
+## 2. 部署前确认
 
-## 4. 业务调用流程
+以下占位符执行前必须替换：
 
-### 4.1 批次生成初始报告
+- `<ssh-user>`：三台服务器的 SSH 用户。
+- `<ruoyi-web-root>`：`10.8.64.107` 当前 RuoYi 静态目录。
+- `<MySQL地址/用户/密码>`：内网 `ry-cloud` 数据库连接信息。
+- `<大模型API地址/模型/API-Key>`：实际大模型配置。
 
-1. `10.2.64.36` 完成跑批并生成 DOCX。
-2. 批次程序调用 `10.8.64.110` 的文件上传登记接口。
-3. Python API 将文件写入初始报告目录，并写入报告、版本及审核任务记录。
-4. 接口返回 `reportId`、`versionId`、`auditId` 和 `pending` 状态。
-5. Worker 获取待处理任务，提取 DOCX 的文字、表格和结构后调用大模型。
-6. 审核结果写入数据库，用户刷新页面或由页面轮询获取最新状态。
+在 `10.8.64.110` 检查：
 
-### 4.2 用户查看和修改报告
-
-1. 用户通过 `10.8.64.107` 进入报告管理页面。
-2. 查询、详情、预览和下载请求经 Nginx 转发至 `10.8.64.110:5010`。
-3. 用户上传修改后的 DOCX 时，后端创建 `v2`、`v3` 等新版本，不覆盖原始文件。
-4. 每个新版本自动创建独立的异步审核任务。
-5. AI 审核工作台展示左侧 DOCX 和右侧各版本审核记录及对话。
-
-## 5. 报告中心服务器部署
-
-### 5.1 目录规划
-
-```text
-/opt/report-management/backend
-/appdata/report-management/initial_reports
-/appdata/report-management/uploaded_reports
+```bash
+python3 --version
+python3 -m pip --version
+ss -lntp | grep ':5010 ' || true
+df -h /opt /appdata
+curl -I --connect-timeout 10 '<大模型API地址>' || true
+mysql -h '<MySQL地址>' -P 3306 -u '<MySQL用户>' -p \
+  -e 'SELECT VERSION(); SHOW DATABASES LIKE "ry-cloud";'
 ```
 
-目录用途：
+在 `10.8.64.107` 检查真实静态目录和 Nginx 配置：
 
-- `initial_reports`：保存批次上传的初始报告。
-- `uploaded_reports`：保存用户在页面上传的后续版本。
-- `backend`：保存 Python API、Worker、虚拟环境及 `.env`。
-
-运行服务的系统用户必须拥有两个文件目录的读写权限。
-
-### 5.2 Python 服务
-
-API 默认监听：
-
-```text
-0.0.0.0:5010
+```bash
+nginx -v
+sudo nginx -T 2>/dev/null | grep -E 'server_name|root |location /prod-api/'
 ```
 
-部署两个 systemd 服务：
+## 3. 制作部署包
 
-```text
-report-management-api.service
-report-management-worker.service
+### 3.1 后端
+
+在保存源码的部署机执行：
+
+```bash
+cd /Users/yangfan/workspace/codex/report-temp/report-management
+rm -f /tmp/report-management-backend.tar.gz
+tar \
+  --exclude='backend/.venv' \
+  --exclude='backend/__pycache__' \
+  --exclude='backend/.env' \
+  -czf /tmp/report-management-backend.tar.gz \
+  backend db/migrations
+
+scp /tmp/report-management-backend.tar.gz \
+  <ssh-user>@10.8.64.110:/tmp/
+scp deploy/scripts/report-management.sh \
+  <ssh-user>@10.8.64.110:/tmp/
 ```
 
-API 使用 Gunicorn 启动，Worker 独立轮询待审核任务。两者使用同一份 `/opt/report-management/backend/.env`。
+如果 `10.8.64.110` 无法访问 Python 软件源，在相同 Linux 系统和 CPU 架构的联网机器准备离线依赖：
 
-### 5.3 环境变量
+```bash
+cd /path/to/report-management
+rm -rf /tmp/report-management-wheelhouse
+mkdir -p /tmp/report-management-wheelhouse
+python3 -m pip download \
+  -r backend/requirements.txt \
+  -d /tmp/report-management-wheelhouse
+tar -czf /tmp/report-management-wheelhouse.tar.gz \
+  -C /tmp report-management-wheelhouse
+scp /tmp/report-management-wheelhouse.tar.gz \
+  <ssh-user>@10.8.64.110:/tmp/
+```
+
+### 3.2 前端
+
+在实际 RuoYi-Cloud 的 `ruoyi-ui` 目录执行：
+
+```bash
+cd /path/to/ruoyi-cloud/ruoyi-ui
+npm ci
+npm run build:prod
+
+rm -f /tmp/ruoyi-ui-dist.tar.gz
+tar -czf /tmp/ruoyi-ui-dist.tar.gz -C dist .
+scp /tmp/ruoyi-ui-dist.tar.gz \
+  <ssh-user>@10.8.64.107:/tmp/
+```
+
+前端在本地构建通过后上传 `dist`，不在内网服务器执行完整构建。
+
+## 4. 数据库迁移
+
+数据库迁移前必须备份。以下命令在能够访问 MySQL 且包含迁移 SQL 的机器执行。
+
+```bash
+export MYSQL_HOST='<MySQL地址>'
+export MYSQL_PORT='3306'
+export MYSQL_USER='<MySQL用户>'
+export MYSQL_DATABASE='ry-cloud'
+cd /path/to/report-management
+
+mysql \
+  -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p \
+  --default-character-set=utf8mb4 "$MYSQL_DATABASE" \
+  < db/migrations/001_precheck_report_management.sql
+
+BACKUP_FILE="/tmp/ry-cloud-before-report-management.sql"
+mysqldump \
+  -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p \
+  --single-transaction --routines --triggers \
+  "$MYSQL_DATABASE" > "$BACKUP_FILE"
+ls -lh "$BACKUP_FILE"
+```
+
+确认预检查没有重复数据或对象冲突后，按顺序执行：
+
+```bash
+for sql in \
+  db/migrations/001_apply_report_management.sql \
+  db/migrations/002_audit_model_config.sql \
+  db/migrations/003_audit_progress_events.sql \
+  db/migrations/004_audit_conversation_checkpoints.sql \
+  db/migrations/005_report_agent_messages.sql
+do
+  echo "执行 $sql"
+  mysql \
+    -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p \
+    --default-character-set=utf8mb4 "$MYSQL_DATABASE" \
+    < "$sql" || exit 1
+done
+```
+
+目标数据库已经执行过迁移时不要重复执行，应先核对现有表结构。
+
+## 5. 部署报告中心到 10.8.64.110
+
+### 5.1 解压及备份
+
+```bash
+ssh <ssh-user>@10.8.64.110
+set -e
+
+sudo mkdir -p \
+  /opt/report-management/backups \
+  /appdata/report-management/initial_reports \
+  /appdata/report-management/uploaded_reports
+
+if [ -d /opt/report-management/backend ]; then
+  sudo cp -a /opt/report-management/backend \
+    /opt/report-management/backups/backend-before-deploy
+fi
+
+sudo rm -rf /opt/report-management/backend.new
+sudo mkdir -p /opt/report-management/backend.new
+sudo tar -xzf /tmp/report-management-backend.tar.gz \
+  -C /opt/report-management/backend.new \
+  --strip-components=1 backend
+
+if [ -f /opt/report-management/backend/.env ]; then
+  sudo cp /opt/report-management/backend/.env \
+    /opt/report-management/backend.new/.env
+fi
+```
+
+### 5.2 安装 Python 依赖
+
+可以访问 Python 软件源时：
+
+```bash
+sudo python3 -m venv /opt/report-management/backend.new/.venv
+sudo /opt/report-management/backend.new/.venv/bin/pip install --upgrade pip
+sudo /opt/report-management/backend.new/.venv/bin/pip install \
+  -r /opt/report-management/backend.new/requirements.txt
+```
+
+完全离线时：
+
+```bash
+sudo rm -rf /tmp/report-management-wheelhouse
+sudo tar -xzf /tmp/report-management-wheelhouse.tar.gz -C /tmp
+sudo python3 -m venv /opt/report-management/backend.new/.venv
+sudo /opt/report-management/backend.new/.venv/bin/pip install \
+  --no-index \
+  --find-links=/tmp/report-management-wheelhouse \
+  -r /opt/report-management/backend.new/requirements.txt
+```
+
+### 5.3 配置环境变量
+
+首次部署执行：
+
+```bash
+sudo cp /opt/report-management/backend.new/.env.example \
+  /opt/report-management/backend.new/.env
+sudo vi /opt/report-management/backend.new/.env
+```
+
+配置内容：
 
 ```dotenv
 REPORT_UPLOAD_DIR=/appdata/report-management/uploaded_reports
 REPORT_INITIAL_REPORT_DIR=/appdata/report-management/initial_reports
 REPORT_PUBLIC_API_PREFIX=/report-management-api
 
-REPORT_MYSQL_HOST=<内网MySQL地址>
+REPORT_MYSQL_HOST=<MySQL地址>
 REPORT_MYSQL_PORT=3306
-REPORT_MYSQL_USER=<数据库用户>
-REPORT_MYSQL_PASSWORD=<数据库密码>
+REPORT_MYSQL_USER=<MySQL用户>
+REPORT_MYSQL_PASSWORD=<MySQL密码>
 REPORT_MYSQL_DATABASE=ry-cloud
 
-ARK_API_URL=<大模型接口地址>
+ARK_API_URL=<大模型API地址>
 ARK_MODEL=<模型名称>
-ARK_API_KEY=<API Key>
+ARK_API_KEY=<API-Key>
 
 REPORT_WORKER_INTERVAL_SECONDS=15
 ```
 
-数据库密码和大模型 API Key 只配置在服务器 `.env`，不得写入源码或部署文档。
+### 5.4 创建单一管理脚本
 
-### 5.4 必要网络条件
+安装部署包中已经提供的统一管理脚本：
 
-`10.8.64.110` 需要能够访问：
+```bash
+sudo install -m 750 \
+  /tmp/report-management.sh \
+  /opt/report-management/report-management.sh
+bash -n /opt/report-management/report-management.sh
+```
 
-- MySQL 服务地址及端口。
-- 配置的大模型 API 地址；如果内网不能访问公网，应替换为内网大模型网关地址。
-- `10.8.64.107` 发起的 API 请求。
-- `10.2.64.36` 发起的 DOCX 上传请求。
+### 5.5 切换版本并启动
 
-## 6. 前端服务器配置
+```bash
+if [ -d /opt/report-management/backend ]; then
+  sudo /opt/report-management/report-management.sh stop || true
+fi
 
-在 `10.8.64.107` 构建并部署实际 `ruoyi-ui` 静态文件。报告中心接口使用以下 Nginx 代理：
+sudo rm -rf /opt/report-management/backend.old
+if [ -d /opt/report-management/backend ]; then
+  sudo mv /opt/report-management/backend \
+    /opt/report-management/backend.old
+fi
+sudo mv /opt/report-management/backend.new \
+  /opt/report-management/backend
+
+sudo /opt/report-management/report-management.sh start
+sudo /opt/report-management/report-management.sh status
+curl -fsS http://127.0.0.1:5010/health
+```
+
+日常只操作一个脚本：
+
+```bash
+sudo /opt/report-management/report-management.sh start
+sudo /opt/report-management/report-management.sh stop
+sudo /opt/report-management/report-management.sh restart
+sudo /opt/report-management/report-management.sh status
+sudo /opt/report-management/report-management.sh logs
+```
+
+需要机器重启后自动拉起且仍不使用 systemd 时，可由运维在 root crontab 增加：
+
+```cron
+@reboot /opt/report-management/report-management.sh start >> /opt/report-management/boot.log 2>&1
+```
+
+## 6. 部署前端到 10.8.64.107
+
+### 6.1 更新静态文件
+
+```bash
+ssh <ssh-user>@10.8.64.107
+export RUOYI_WEB_ROOT='<ruoyi-web-root>'
+
+test "$RUOYI_WEB_ROOT" != '<ruoyi-web-root>'
+test -d "$RUOYI_WEB_ROOT"
+
+BACKUP_DIR="$RUOYI_WEB_ROOT.backup"
+sudo rm -rf "$BACKUP_DIR"
+sudo cp -a "$RUOYI_WEB_ROOT" "$BACKUP_DIR"
+sudo find "$RUOYI_WEB_ROOT" -mindepth 1 -maxdepth 1 \
+  -exec rm -rf {} +
+sudo tar -xzf /tmp/ruoyi-ui-dist.tar.gz \
+  -C "$RUOYI_WEB_ROOT"
+```
+
+### 6.2 配置 Nginx
+
+在当前 RuoYi 的 `server` 块中加入：
 
 ```nginx
 location /prod-api/report-management-api/ {
@@ -145,35 +311,34 @@ location /prod-api/report-management-api/ {
 }
 ```
 
-浏览器始终访问 `10.8.64.107`，无需直接访问 `10.8.64.110`，也不需要额外配置 CORS。
-
-## 7. 批次上传接口
-
-批次服务器调用：
-
-```text
-POST http://10.8.64.110:5010/api/report-management/reports/register-upload
-Content-Type: multipart/form-data
-```
-
-字段说明：
-
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `file` | 是 | DOCX 文件，最大 50 MB |
-| `systemId` | 是 | 系统编码 |
-| `title` | 是 | 中文报告标题 |
-| `reportMonth` | 是 | 报表月份，格式 `YYYY年MM月` |
-| `jiraId` | 否 | 对应 JIRA 任务号 |
-| `source` | 否 | 建议固定为 `batch` |
-
-调用示例：
+检查并重载：
 
 ```bash
+sudo nginx -t
+sudo nginx -s reload
+curl -fsS \
+  http://127.0.0.1/prod-api/report-management-api/reports
+```
+
+如果 Nginx 在 Docker 中运行，修改宿主机挂载配置后执行：
+
+```bash
+docker exec <nginx-container> nginx -t
+docker exec <nginx-container> nginx -s reload
+```
+
+## 7. 批次服务器接入
+
+在 `10.2.64.36` 联调：
+
+```bash
+curl -fsS http://10.8.64.110:5010/health
+
 curl --fail --show-error \
   --connect-timeout 10 \
   --max-time 300 \
-  -X POST 'http://10.8.64.110:5010/api/report-management/reports/register-upload' \
+  -X POST \
+  'http://10.8.64.110:5010/api/report-management/reports/register-upload' \
   -F 'file=@/appdata/batch/output/性能容量报告.docx' \
   -F 'systemId=credit-card-center' \
   -F 'title=中信银行信用卡中心授权交易资源分析报告' \
@@ -182,7 +347,7 @@ curl --fail --show-error \
   -F 'source=batch'
 ```
 
-成功响应示例：
+成功响应：
 
 ```json
 {
@@ -193,80 +358,72 @@ curl --fail --show-error \
 }
 ```
 
-批量上传建议：
+批量调用规则：
 
-- 每份报告单独请求，平均 `3～5 MB` 的文件建议并发数控制在 `2～4`。
-- 仅对网络异常、连接超时和 `5xx` 响应进行有限次数重试。
-- 对 `4xx` 响应记录错误信息并停止重试，避免错误参数反复提交。
-- 批次日志保存报告路径、系统编码、月份、HTTP 状态码及响应中的 `auditId`。
+- 每份报告单独请求，`3～5 MB` 文件并发数控制在 `2～4`。
+- 网络超时和 `5xx` 最多重试 3 次，间隔建议 `5s/15s/30s`。
+- `4xx` 不自动重试，记录响应内容后处理。
+- 日志记录文件名、系统编码、月份、HTTP 状态码和 `auditId`。
 
-## 8. 数据库部署
+## 8. 验收步骤
 
-部署前先执行预检查脚本，确认唯一键冲突、现有索引和目标表状态；确认无误后执行迁移脚本。
-
-迁移内容包括：
-
-- 将报告唯一键调整为 `systemId + title + report_month`。
-- 创建报告版本、审核记录、提示词、检查点、审核事件和 Agent 消息等表。
-- 保留 `capability_report_log` 作为报告主记录。
-
-数据库迁移属于写操作，必须先备份并在维护窗口执行。
-
-## 9. 部署顺序
-
-1. 确认 `10.8.64.110` 到 MySQL 和大模型 API 的连通性。
-2. 备份数据库并完成数据库预检查和迁移。
-3. 在 `10.8.64.110` 创建目录、安装 Python 环境并配置 `.env`。
-4. 启动 API 和 Worker，完成本机健康检查。
-5. 在 `10.8.64.107` 部署前端静态资源并更新 Nginx 代理。
-6. 从 `10.2.64.36` 上传一份测试 DOCX，验证初始报告登记和异步审核。
-7. 在浏览器验证查询、预览、下载、上传新版本和 AI 审核工作台。
-8. 测试通过后再切换正式批次调用。
-
-## 10. 验收检查
-
-### 10.1 报告中心服务器
+在 `10.8.64.110`：
 
 ```bash
+sudo /opt/report-management/report-management.sh status
 curl -fsS http://127.0.0.1:5010/health
 curl -fsS http://127.0.0.1:5010/api/report-management/reports
-systemctl status report-management-api
-systemctl status report-management-worker
+tail -n 100 /opt/report-management/backend/logs/api.log
+tail -n 100 /opt/report-management/backend/logs/worker.log
 ```
 
-### 10.2 批次服务器
+在 `10.8.64.107`：
 
 ```bash
 curl -fsS http://10.8.64.110:5010/health
+curl -fsS http://127.0.0.1/prod-api/report-management-api/reports
 ```
 
-完成一份测试报告上传后，确认：
+业务验收：
 
-- 接口返回 `pending` 和有效的 `reportId/versionId/auditId`。
-- 初始报告目录出现唯一命名的 DOCX 文件。
-- 页面能查询到对应报告。
-- 审核状态能够从“审核中”更新为最终结果。
-- DOCX 可以在线预览和下载。
-- 上传新版本后版本号递增，旧版本仍可查看。
+1. 从 `10.2.64.36` 上传一份测试 DOCX。
+2. 确认接口返回 `pending` 及有效的三个 ID。
+3. 在 `10.8.64.107` 页面确认报告已经出现。
+4. 等待审核状态由“审核中”更新为最终结果。
+5. 验证 DOCX 在线预览和下载。
+6. 上传修改版，确认生成 `v2` 且 `v1` 仍可查看。
+7. 验证 AI 审核工作台的文档和审核记录。
 
-### 10.3 前端服务器
+## 9. 回退命令
+
+后端回退：
 
 ```bash
-curl -fsS http://127.0.0.1/prod-api/report-management-api/reports
-nginx -t
+sudo /opt/report-management/report-management.sh stop
+sudo rm -rf /opt/report-management/backend.failed
+sudo mv /opt/report-management/backend \
+  /opt/report-management/backend.failed
+sudo mv /opt/report-management/backend.old \
+  /opt/report-management/backend
+sudo /opt/report-management/report-management.sh start
+curl -fsS http://127.0.0.1:5010/health
 ```
 
-## 11. 故障处理与回退
+前端回退：
 
-- 前端异常：恢复 `10.8.64.107` 上一次静态文件备份和 Nginx 配置。
-- API 异常：恢复 `/opt/report-management/backend` 上一次发布目录并重启 API。
-- Worker 异常：可单独停止 Worker；已登记报告仍可查询和下载，待审核任务保留在数据库中。
-- 大模型不可达：报告登记和文件上传不受影响，审核任务记录失败原因，恢复后可重新触发审核。
-- 数据库迁移异常：停止服务并依据迁移前备份回退，禁止通过删除业务表进行临时处理。
+```bash
+export RUOYI_WEB_ROOT='<ruoyi-web-root>'
+sudo find "$RUOYI_WEB_ROOT" -mindepth 1 -maxdepth 1 \
+  -exec rm -rf {} +
+sudo cp -a "$RUOYI_WEB_ROOT.backup/." "$RUOYI_WEB_ROOT/"
+sudo nginx -t
+sudo nginx -s reload
+```
 
-## 12. 当前边界
+数据库回退必须使用迁移前的 SQL 备份，并由数据库管理员确认后执行，不能直接删除业务表。
 
-- 当前不配置接口 Token，依赖三台服务器所在内网的访问边界。
-- 第一版 AI 审核处理 DOCX 的文字、表格和文档结构，不分析图片及图表语义。
-- 报告文件当前保存在 `10.8.64.110` 本地磁盘；后续文件量明显增长时，可再评估共享存储或对象存储。
-- 本文档提供部署方案，不代表已经在上述三台内网服务器执行部署。
+## 10. 边界说明
+
+- 本文提供可执行步骤，但尚未在三台内网服务器实际执行。
+- API 和 Worker 由一个脚本管理，不使用 systemd；仍保留两个进程以避免异步审核阻塞 Web 请求。
+- 第一版审核处理 DOCX 文字、表格和结构，不分析图片及图表语义。
