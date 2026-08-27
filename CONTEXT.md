@@ -29,8 +29,16 @@ A new Uploaded Report created after the latest version has already passed audit.
 _Avoid_: Locked passed report, final report
 
 **AI Audit Record**:
-An audit result produced by DeepSeek for a specific Report Version. Multiple audit records may exist for one version, and the UI normally shows the latest one.
+An audit result produced by the configured model for a specific Report Version. Every record is explicitly classified as an Initial Audit or Revision Audit; multiple records may exist for one version, and the UI normally shows the latest one.
 _Avoid_: Review result, validation result
+
+**Initial Audit**:
+An AI Audit Record created for an Initial Report. It uses the Initial Audit Prompt and checks language quality, directory and heading consistency, and basic document completeness.
+_Avoid_: First pass, batch audit
+
+**Revision Audit**:
+An AI Audit Record created for an Uploaded Report. It uses the Revision Audit Prompt for performance-capacity analysis and does not repeat Initial Audit checks.
+_Avoid_: Re-audit, secondary audit, uploaded audit
 
 **Latest Audit Result**:
 The most recent AI Audit Record for the latest Report Version of a Report Record. The report list uses this result by default.
@@ -41,7 +49,7 @@ A backend service capability that accepts a Report Version and creates an AI Aud
 _Avoid_: DeepSeek service, report checker
 
 **Audit Prompt**:
-The configurable instruction set used by the AI Audit Service to judge whether a Report Version meets report quality requirements.
+One of two independently versioned instruction sets used by the AI Audit Service: the Initial Audit Prompt or Revision Audit Prompt. Both use the same model connection configuration.
 _Avoid_: Hard-coded prompt, audit rule text
 
 **Audit Scope**:
