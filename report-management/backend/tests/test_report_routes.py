@@ -55,6 +55,7 @@ class FakeReportRepository:
         }
         self.version_file = None
         self.created_prompt_payload = None
+        self.prompt_error = None
         self.updated_ai_config_payload = None
         self.ai_config = {
             "id": 1,
@@ -261,6 +262,8 @@ class FakeReportRepository:
         return self.active_prompts.get(audit_type)
 
     def create_prompt_version(self, audit_type, payload):
+        if self.prompt_error:
+            raise self.prompt_error
         self.created_prompt_payload = {"auditType": audit_type, **payload}
         return {
             "id": 2,
@@ -752,6 +755,28 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.headers["Deprecation"], "true")
         self.assertEqual(response.json, {"message": "提示词内容不能为空"})
+
+    def test_prompt_creation_repository_error_is_structured_and_only_legacy_is_deprecated(self):
+        self.app.config["PROPAGATE_EXCEPTIONS"] = False
+        self.repository.prompt_error = RuntimeError("SELECT api_key FROM internal_table")
+
+        legacy = self.client.post(
+            "/api/report-management/audit-prompts",
+            json={"name": "修订审核提示词", "promptContent": "内容"},
+        )
+        typed = self.client.post(
+            "/api/report-management/audit-prompts/initial",
+            json={"name": "初始审核提示词", "promptContent": "内容"},
+        )
+
+        self.assertEqual(legacy.status_code, 500)
+        self.assertEqual(legacy.headers["Deprecation"], "true")
+        self.assertEqual(legacy.json, {"message": "保存审核提示词失败"})
+        self.assertNotIn("api_key", legacy.get_data(as_text=True))
+        self.assertNotIn("internal_table", legacy.get_data(as_text=True))
+        self.assertEqual(typed.status_code, 500)
+        self.assertNotIn("Deprecation", typed.headers)
+        self.assertEqual(typed.json, {"message": "保存审核提示词失败"})
 
     def test_prompt_posts_reject_non_object_json_and_invalid_field_types(self):
         for url, payload, deprecated in (

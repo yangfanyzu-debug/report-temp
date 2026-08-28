@@ -68,7 +68,10 @@ def _create_prompt_version(audit_type: str, deprecated: bool = False):
     if error:
         return _response({"message": error}, 400, deprecated)
 
-    prompt = _repository().create_prompt_version(audit_type, payload)
+    try:
+        prompt = _repository().create_prompt_version(audit_type, payload)
+    except Exception:
+        return _response({"message": "保存审核提示词失败"}, 500, deprecated)
     return _response(_public_prompt(prompt), 201, deprecated)
 
 
