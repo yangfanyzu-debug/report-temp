@@ -7,12 +7,12 @@ This folder is reserved for the new report management feature so it can be devel
 - RuoYi-Cloud `ruoyi-ui` menu page integration notes and frontend source handoff.
 - Python backend for report records, versions, uploads, preview, download, DOCX extraction, and asynchronous AI audit.
 - Database migration drafts for `capability_report_log` extension and new report version, audit, and audit prompt tables.
-- DeepSeek integration placeholders until the model URL and key are provided.
+- Shared OpenAI-compatible model connection with versioned initial/revision audit prompts.
 
 ## Constraints
 
 - Do not modify the existing `backend/` file service unless the change is explicitly needed and confirmed.
-- Keep initial AI audit scope to DOCX text, tables, and document structure.
+- Route batch initial reports to `initial` audit and user uploads to `revision` audit.
 - Do not process image or chart semantics in the first version.
 - Preserve every report version instead of overwriting uploaded files.
 
@@ -34,12 +34,11 @@ Implemented so far:
 - Versioned DOCX upload route.
 - Version preview and download routes.
 - Audit detail route.
-- Active audit prompt route.
-- Versioned audit prompt creation route.
-- Audit input assembly from DOCX text, tables, and report metadata.
+- Shared model configuration API and two typed, versioned audit prompt APIs.
+- Audit input assembly from DOCX text, tables, headings, best-effort TOC, and report metadata.
 - Single-run audit worker framework.
 - Long-running audit worker entrypoint.
-- Ark/OpenAI-compatible model client placeholder with JSON response parsing and validation.
+- Ark/OpenAI-compatible streaming model client with Chinese Markdown audit output.
 - Deployment drafts for systemd and Nginx.
 - Foundation tests for the above.
 
@@ -57,7 +56,9 @@ export ARK_MODEL="ark-code-latest"
 export ARK_API_KEY="<set outside git>"
 ```
 
-`DEEPSEEK_API_URL`, `DEEPSEEK_MODEL`, and `DEEPSEEK_API_KEY` are still accepted as backward-compatible aliases.
+Production audit jobs read the shared connection from `capability_report_ai_config`. Environment values remain deployment bootstrap/backward-compatibility settings and are not used as a fallback by the dual-audit workers.
+
+Batch registration creates an `initial` audit. Uploading a later report version creates a `revision` audit. New jobs no longer compose business checkpoints; legacy checkpoint tables and snapshots remain readable for historical records.
 
 ## Local Backend Commands
 

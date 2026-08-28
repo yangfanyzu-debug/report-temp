@@ -17,17 +17,34 @@ class AgentWorker:
         if job is None:
             return {"processed": False, "reason": "no_pending_agent_message"}
 
-        prompt = self.repository.get_active_prompt()
-        if prompt is None:
-            message = "未配置启用的AI模型"
-            self.repository.mark_agent_message_error(job["messageId"], message)
-            return {"processed": True, "messageId": job["messageId"], "status": "error"}
-
-        self.repository.mark_agent_message_running(job["messageId"], prompt["modelName"])
         try:
+            model_config = self.repository.get_ai_config()
+            if not model_config or not all(
+                str(model_config.get(field) or "").strip()
+                for field in ("apiUrl", "modelName", "apiKey")
+            ):
+                raise RuntimeError("未配置共用模型连接")
+
+            audit_type = job.get("auditType")
+            if audit_type not in {"initial", "revision"}:
+                raise RuntimeError("不支持的审核类型")
+            prompt = (
+                self.repository.get_prompt_by_id(job["promptId"])
+                if job.get("promptId")
+                else None
+            )
+            if prompt is None:
+                prompt = self.repository.get_active_prompt(audit_type)
+            if prompt is None:
+                label = "初始" if audit_type == "initial" else "修订"
+                raise RuntimeError(f"未配置启用的{label}审核提示词")
+
+            self.repository.mark_agent_message_running(
+                job["messageId"], model_config["modelName"]
+            )
             if not Path(job["filePath"]).is_file():
                 raise FileNotFoundError("报告文件不存在")
-            context = build_audit_input(job, job.get("checkpoints"))
+            context = build_audit_input(job)
             context["latestAuditResult"] = job.get("auditResult") or "暂无审核结果"
             pending_chunks: list[str] = []
             pending_length = 0
@@ -45,6 +62,7 @@ class AgentWorker:
                     last_flush_at = now
 
             self.model_client.chat_report_agent(
+                model_config,
                 prompt,
                 context,
                 job.get("history", []),

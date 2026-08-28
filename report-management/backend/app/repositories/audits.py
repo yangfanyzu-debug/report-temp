@@ -122,6 +122,12 @@ def _mask_secret(value: str | None) -> str:
     return f"{value[:4]}****{value[-4:]}"
 
 
+def _audit_type_label(audit_type: str | None) -> str:
+    return {"initial": "初始审核", "revision": "修订审核"}.get(
+        audit_type or "", "未知审核"
+    )
+
+
 class MySqlAuditRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -221,6 +227,7 @@ class MySqlAuditRepository:
                       conclusion,
                       checkpoint_snapshot,
                       prompt_id,
+                      audit_type,
                       prompt_version,
                       model_name,
                       error_message,
@@ -244,6 +251,8 @@ class MySqlAuditRepository:
             "conclusion": row["conclusion"],
             "checkpointSnapshot": _json_value(row["checkpoint_snapshot"]),
             "promptId": row["prompt_id"],
+            "auditType": row["audit_type"],
+            "auditTypeLabel": _audit_type_label(row["audit_type"]),
             "promptVersion": row["prompt_version"],
             "modelName": row["model_name"],
             "errorMessage": row["error_message"],
@@ -491,7 +500,8 @@ class MySqlAuditRepository:
                       version.uploader, version.source, version.audit_status, version.create_time AS version_create_time,
                       audit.id AS audit_id, audit.status, audit.result_text, audit.conclusion,
                       audit.summary, audit.result_data, audit.checkpoint_snapshot,
-                      audit.model_name, audit.error_message, audit.started_at, audit.finished_at
+                      audit.audit_type, audit.model_name, audit.error_message,
+                      audit.started_at, audit.finished_at
                     FROM capability_report_version version
                     LEFT JOIN capability_report_audit audit ON audit.version_id = version.id
                     WHERE version.report_id = %s
@@ -513,6 +523,8 @@ class MySqlAuditRepository:
                     "auditStatus": row["status"] or row["audit_status"],
                     "createTime": _format_time(row["version_create_time"]),
                     "auditId": row["audit_id"],
+                    "auditType": row["audit_type"],
+                    "auditTypeLabel": _audit_type_label(row["audit_type"]),
                     "resultText": row["result_text"] or self._legacy_result_text(row["summary"], row["result_data"]),
                     "conclusion": row["conclusion"] or self._legacy_conclusion(row["status"]),
                     "checkpointSnapshot": _json_value(row["checkpoint_snapshot"]),
@@ -590,9 +602,9 @@ class MySqlAuditRepository:
                     """
                     SELECT message.id AS message_id, message.report_id, message.version_id,
                            message.reply_to_id, question.content AS question,
-                           version.file_path, version.file_name,
+                           version.file_path, version.file_name, version.version_type,
                            report.systemId, report.title, report.report_month,
-                           audit.result_text, audit.checkpoint_snapshot
+                           audit.result_text, audit.audit_type, audit.prompt_id
                     FROM capability_report_agent_message message
                     JOIN capability_report_agent_message question ON question.id = message.reply_to_id
                     JOIN capability_report_version version ON version.id = message.version_id
@@ -634,7 +646,10 @@ class MySqlAuditRepository:
             "title": row["title"],
             "reportMonth": row["report_month"],
             "auditResult": row["result_text"],
-            "checkpoints": _json_value(row["checkpoint_snapshot"]) or [],
+            "auditType": row["audit_type"] or (
+                "initial" if row["version_type"] == "initial" else "revision"
+            ),
+            "promptId": row["prompt_id"],
             "history": [{"role": item["role"], "content": item["content"]} for item in history],
         }
 

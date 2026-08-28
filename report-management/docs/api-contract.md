@@ -25,6 +25,13 @@ Base path:
 | `initial` | 初始版本 |
 | `uploaded` | 上传版本 |
 
+审核类型：
+
+| 值 | 中文展示 | 触发来源 |
+| --- | --- | --- |
+| `initial` | 初始审核 | 批次登记或上传并登记初始报告 |
+| `revision` | 修订审核 | 用户上传后续版本 |
+
 ## 报告列表
 
 ```text
@@ -56,6 +63,8 @@ GET /api/report-management/reports
       "latestVersionNo": 2,
       "latestVersionType": "uploaded",
       "latestAuditId": 99,
+      "latestAuditType": "revision",
+      "latestAuditTypeLabel": "修订审核",
       "latestAuditStatus": "failed",
       "latestAuditConclusion": "不通过",
       "latestAuditSuggestion": "请修正系统概述与性能分析小结中的ES服务器数量",
@@ -92,6 +101,8 @@ GET /api/report-management/reports/{reportId}
       "source": "batch",
       "createTime": "2026-08-11 10:30:00",
       "latestAuditId": 88,
+      "auditType": "initial",
+      "auditTypeLabel": "初始审核",
       "latestAuditConclusion": "不通过"
     },
     {
@@ -138,6 +149,7 @@ POST /api/report-management/reports/register
   "reportId": 1,
   "versionId": 9,
   "auditId": 88,
+  "auditType": "initial",
   "auditStatus": "pending"
 }
 ```
@@ -182,6 +194,7 @@ curl -X POST http://localhost:5010/api/report-management/reports/register-upload
   "reportId": 1,
   "versionId": 9,
   "auditId": 88,
+  "auditType": "initial",
   "auditStatus": "pending"
 }
 ```
@@ -210,6 +223,7 @@ Content-Type: multipart/form-data
   "versionId": 10,
   "versionNo": 2,
   "auditId": 99,
+  "auditType": "revision",
   "auditStatus": "pending"
 }
 ```
@@ -280,6 +294,8 @@ GET /api/report-management/audits/{auditId}
     ]
   },
   "promptId": 1,
+  "auditType": "revision",
+  "auditTypeLabel": "修订审核",
   "promptVersion": 3,
   "modelName": "deepseek-chat",
   "errorMessage": null,
@@ -333,26 +349,38 @@ GET /api/report-management/audits/{auditId}/events?afterId=0
 | `result` | 审核完成结论 |
 | `error` | 审核执行异常 |
 
+## 共用模型连接
+
+```text
+GET /api/report-management/ai-config
+PUT /api/report-management/ai-config
+```
+
+PUT 请求字段为 `apiUrl`、`modelName` 和可选 `apiKey`。`apiKey` 留空或为 `null` 时沿用当前密钥；响应只返回脱敏值和 `apiKeyConfigured`，不返回明文。
+
 ## 查看当前启用提示词
 
 ```text
-GET /api/report-management/audit-prompts/active
+GET /api/report-management/audit-prompts/{auditType}/active
 ```
+
+`auditType` 只允许 `initial` 或 `revision`。
 
 ## 修改提示词
 
 修改提示词必须生成新版本，并启用新版本。
 
 ```text
-POST /api/report-management/audit-prompts
+POST /api/report-management/audit-prompts/{auditType}
 ```
 
 请求示例：
 
 ```json
 {
-  "name": "默认审核提示词",
-  "promptContent": "请根据以下检查点审核性能容量报告，并输出JSON...",
-  "modelName": "deepseek-chat"
+  "name": "修订审核提示词",
+  "promptContent": "请审核性能容量指标、数据一致性、风险和建议，并使用中文 Markdown 输出。"
 }
 ```
+
+旧 `/audit-prompts/active` 和 `/audit-prompts` 暂时映射到 `revision`，响应携带 `Deprecation: true`。新审核不再读取业务检查点；历史 `checkpointSnapshot` 和旧 JSON 字段继续保留。

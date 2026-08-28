@@ -70,20 +70,21 @@ class DeepSeekClient:
 
     def chat_report_agent(
         self,
+        model_config: dict[str, Any],
         prompt: dict[str, Any],
         report_context: dict[str, Any],
         history: list[dict[str, str]],
         question: str,
         on_delta: Callable[[str], None] | None = None,
     ) -> str:
-        api_url = prompt.get("apiUrl") or self.settings.deepseek_url
-        api_key = prompt.get("apiKey") or self.settings.deepseek_key
-        model_name = prompt.get("modelName") or self.settings.deepseek_model
-        if not api_url or not api_key:
-            raise DeepSeekNotConfigured("DeepSeek API URL 或 Key 未配置")
+        api_url = str(model_config.get("apiUrl") or "").strip()
+        api_key = str(model_config.get("apiKey") or "").strip()
+        model_name = str(model_config.get("modelName") or "").strip()
+        if not api_url or not api_key or not model_name:
+            raise DeepSeekNotConfigured("共用模型连接配置不完整")
 
         system_content = (
-            "你是性能容量报告AI助手。必须基于给定报告文字、表格、审核检查点和最新审核结果回答，"
+            "你是性能容量报告AI助手。必须基于给定报告文字、表格、标题结构和最新审核结果回答，"
             "不得声称看到了未解析的图片或图表语义。使用中文 Markdown，结论具体、简洁；"
             "用户要求修改时，只提供可执行的修改建议或替换文本，不声称已经修改DOCX。\n\n"
             "【当前审核配置】\n" + prompt["promptContent"] + "\n\n"

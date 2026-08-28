@@ -123,8 +123,10 @@ class FakeModelClient:
             on_delta("未发现明显问题。")
         return self.result
 
-    def chat_report_agent(self, prompt, report_context, history, question, on_delta=None):
-        self.calls.append((prompt, report_context, history, question))
+    def chat_report_agent(
+        self, model_config, prompt, report_context, history, question, on_delta=None
+    ):
+        self.calls.append((model_config, prompt, report_context, history, question))
         if on_delta:
             on_delta("建议将ES服务器数量")
             on_delta("统一为14台。")
@@ -132,9 +134,17 @@ class FakeModelClient:
 
 
 class FakeAgentRepository:
-    def __init__(self, job=None, prompt=None):
+    def __init__(self, job=None, prompt=None, model_config=None, saved_prompt=None):
         self.job = job
         self.prompt = prompt
+        self.saved_prompt = saved_prompt
+        self.model_config = model_config or {
+            "apiUrl": "https://example.test/v1",
+            "modelName": "shared-model",
+            "apiKey": "shared-secret",
+        }
+        self.requested_prompt_id = None
+        self.requested_prompt_types = []
         self.running = []
         self.chunks = []
         self.completed = []
@@ -143,7 +153,15 @@ class FakeAgentRepository:
     def next_pending_agent_message(self):
         return self.job
 
-    def get_active_prompt(self):
+    def get_ai_config(self):
+        return self.model_config
+
+    def get_prompt_by_id(self, prompt_id):
+        self.requested_prompt_id = prompt_id
+        return self.saved_prompt
+
+    def get_active_prompt(self, audit_type):
+        self.requested_prompt_types.append(audit_type)
         return self.prompt
 
     def mark_agent_message_running(self, message_id, model_name):
@@ -178,6 +196,11 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertFalse(audit_input["scope"]["imagesAndChartsSemantic"])
         self.assertIn("性能容量报告", audit_input["document"]["paragraphs"])
         self.assertEqual(audit_input["document"]["tables"][0][1], ["ES", "14"])
+        self.assertEqual(audit_input["document"]["headings"][0]["level"], 1)
+        self.assertEqual(audit_input["document"]["headings"][0]["text"], "性能容量报告")
+        self.assertFalse(audit_input["document"]["tocAvailable"])
+        self.assertEqual(audit_input["document"]["tocEntries"], [])
+        self.assertNotIn("checkpoints", audit_input)
 
     def test_parse_model_result_extracts_optional_conclusion(self):
         self.assertEqual(parse_model_result("审核结论：通过\n内容完整")["conclusion"], "passed")
@@ -488,28 +511,38 @@ class AuditWorkerTest(unittest.TestCase):
                 "reportMonth": "2026年08月",
                 "question": "ES服务器数量应该怎么改？",
                 "auditResult": "审核结论：不通过",
-                "checkpoints": [],
+                "auditType": "revision",
+                "promptId": 42,
                 "history": [{"role": "user", "content": "报告有什么问题？"}],
             }
-            prompt = {"modelName": "deepseek-chat", "promptContent": "请审核"}
-            repository = FakeAgentRepository(job, prompt)
+            prompt = {"id": 42, "auditType": "revision", "promptContent": "请审核"}
+            repository = FakeAgentRepository(job, saved_prompt=prompt)
             model_client = FakeModelClient()
 
             result = AgentWorker(repository, model_client).run_once()
 
         self.assertEqual(result, {"processed": True, "messageId": 21, "status": "completed"})
-        self.assertEqual(repository.running, [(21, "deepseek-chat")])
+        self.assertEqual(repository.running, [(21, "shared-model")])
         self.assertEqual("".join(chunk for _, chunk in repository.chunks), "建议将ES服务器数量统一为14台。")
         self.assertEqual(repository.completed, [21])
-        self.assertEqual(model_client.calls[0][3], "ES服务器数量应该怎么改？")
+        self.assertEqual(repository.requested_prompt_id, 42)
+        self.assertEqual(repository.requested_prompt_types, [])
+        self.assertEqual(model_client.calls[0][0]["modelName"], "shared-model")
+        self.assertEqual(model_client.calls[0][1]["auditType"], "revision")
+        self.assertEqual(model_client.calls[0][4], "ES服务器数量应该怎么改？")
+        self.assertNotIn("checkpoints", model_client.calls[0][2])
 
     def test_agent_worker_marks_error_when_model_is_missing(self):
-        repository = FakeAgentRepository({"messageId": 22})
+        repository = FakeAgentRepository(
+            {"messageId": 22, "auditType": "revision", "promptId": None},
+            model_config={},
+        )
+        repository.model_config = {}
 
         result = AgentWorker(repository, FakeModelClient()).run_once()
 
         self.assertEqual(result, {"processed": True, "messageId": 22, "status": "error"})
-        self.assertEqual(repository.errors, [(22, "未配置启用的AI模型")])
+        self.assertEqual(repository.errors, [(22, "未配置共用模型连接")])
 
 
 if __name__ == "__main__":

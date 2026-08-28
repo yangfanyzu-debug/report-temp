@@ -82,6 +82,12 @@ def _audit_result_summary(result_text: Any) -> str:
     return ""
 
 
+def _audit_type_label(audit_type: str | None) -> str:
+    return {"initial": "初始审核", "revision": "修订审核"}.get(
+        audit_type or "", "未知审核"
+    )
+
+
 class MySqlReportRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -127,6 +133,7 @@ class MySqlReportRepository:
                       latest_version.create_time AS latest_version_create_time,
                       latest_version.audit_status AS latest_audit_status,
                       latest_audit.id AS latest_audit_id,
+                      latest_audit.audit_type AS latest_audit_type,
                       latest_audit.summary AS latest_audit_summary,
                       latest_audit.result_text AS latest_audit_result_text,
                       latest_audit.conclusion AS latest_audit_conclusion,
@@ -170,6 +177,7 @@ class MySqlReportRepository:
                       version.source,
                       version.create_time,
                       latest_audit.id AS latest_audit_id,
+                      latest_audit.audit_type AS latest_audit_type,
                       latest_audit.summary AS latest_audit_summary,
                       latest_audit.result_text AS latest_audit_result_text,
                       latest_audit.conclusion AS latest_audit_conclusion,
@@ -393,6 +401,8 @@ class MySqlReportRepository:
             "latestVersionUploader": row.get("latest_version_uploader"),
             "latestVersionCreateTime": _format_time(row.get("latest_version_create_time")),
             "latestAuditId": row["latest_audit_id"],
+            "latestAuditType": row.get("latest_audit_type"),
+            "latestAuditTypeLabel": _audit_type_label(row.get("latest_audit_type")),
             "latestAuditStatus": row["latest_audit_status"] or "pending",
             "latestAuditConclusion": self._audit_conclusion(row),
             "latestAuditSuggestion": self._audit_suggestion(row),
@@ -411,6 +421,8 @@ class MySqlReportRepository:
             "source": row["source"],
             "createTime": _format_time(row["create_time"]),
             "latestAuditId": row["latest_audit_id"],
+            "auditType": row.get("latest_audit_type"),
+            "auditTypeLabel": _audit_type_label(row.get("latest_audit_type")),
             "latestAuditConclusion": self._audit_conclusion(row),
             "latestAuditSuggestion": self._audit_suggestion(row),
             "latestAuditErrorMessage": row.get("latest_audit_error_message"),
