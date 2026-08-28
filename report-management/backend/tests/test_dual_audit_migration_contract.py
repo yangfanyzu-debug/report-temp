@@ -20,6 +20,8 @@ class DualAuditMigrationContractTest(unittest.TestCase):
         self.assertIn("'revision'", sql)
         self.assertNotRegex(sql.upper(), r"DROP\s+TABLE")
         self.assertNotRegex(sql.upper(), r"DROP\s+COLUMN")
+        self.assertNotRegex(sql.upper(), r"\bTRUNCATE\b")
+        self.assertNotRegex(sql.upper(), r"DELETE\s+FROM\s+CAPABILITY_REPORT")
 
     def test_precheck_reports_unlinked_audits_and_active_prompts(self):
         sql = PRECHECK.read_text(encoding="utf-8")
@@ -29,7 +31,7 @@ class DualAuditMigrationContractTest(unittest.TestCase):
         self.assertIn("running_audit_rows", sql)
         self.assertNotRegex(sql.upper(), r"\b(INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|TRUNCATE)\b")
 
-    def test_migration_seeds_complete_design_prompts_and_markdown_protocol(self):
+    def test_migration_seeds_complete_design_prompts(self):
         sql = MIGRATION.read_text(encoding="utf-8")
 
         initial_prompt = """你是性能容量报告的初始质量审核助手。你只审核批次生成的初始 DOCX 报告，目标是发现基础文字和文档结构问题。
@@ -60,10 +62,51 @@ class DualAuditMigrationContractTest(unittest.TestCase):
 
         self.assertIn(initial_prompt, sql)
         self.assertIn(revision_prompt, sql)
-        self.assertIn("审核结论：通过", sql)
-        self.assertIn("审核结论：不通过", sql)
-        self.assertIn("中文 Markdown", sql)
-        self.assertIn("不输出 JSON", sql)
+
+    def test_migration_enforces_initial_and_revision_at_database_layer(self):
+        sql = MIGRATION.read_text(encoding="utf-8")
+
+        enum_definition = "ENUM('initial', 'revision')"
+        self.assertGreaterEqual(sql.count(enum_definition), 2)
+        self.assertIn("column_type", sql)
+        self.assertIn("MODIFY COLUMN `audit_type`", sql)
+
+    def test_seed_existence_is_scoped_by_name_version_and_audit_type(self):
+        sql = MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn(
+            """AND NOT EXISTS (
+    SELECT 1 FROM capability_report_audit_prompt
+    WHERE name = '初始审核提示词'
+      AND version = 1
+      AND audit_type = 'initial'
+  );""",
+            sql,
+        )
+        self.assertIn(
+            """AND NOT EXISTS (
+    SELECT 1 FROM capability_report_audit_prompt
+    WHERE name = '修订审核提示词'
+      AND version = 1
+      AND audit_type = 'revision'
+  );""",
+            sql,
+        )
+
+    def test_seed_activation_preserves_existing_active_prompt_versions(self):
+        sql = MIGRATION.read_text(encoding="utf-8")
+
+        self.assertIn("@dual_audit_types_first_run", sql)
+        self.assertRegex(
+            sql,
+            r"WHERE @dual_audit_types_first_run = 1\s+AND enabled = 1",
+        )
+        self.assertIn("LEFT JOIN capability_report_audit_prompt active", sql)
+        self.assertIn("AND active.id IS NULL", sql)
+        self.assertNotRegex(
+            sql,
+            r"UPDATE capability_report_audit_prompt\s+SET enabled = 0\s+WHERE audit_type IN",
+        )
 
     def test_migration_uses_mysql_57_information_schema_guards_and_indexes(self):
         sql = MIGRATION.read_text(encoding="utf-8")

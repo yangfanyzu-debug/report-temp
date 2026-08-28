@@ -1,7 +1,5 @@
 -- Add shared model configuration and explicit initial/revision audit types.
 -- Compatible with MySQL 5.7 and safe to re-run.
--- 模型客户端统一附加输出协议：首行必须为“审核结论：通过”或“审核结论：不通过”，
--- 后续使用中文 Markdown 输出，不输出 JSON。
 
 SET NAMES utf8mb4;
 
@@ -26,7 +24,7 @@ BEGIN
       AND column_name = 'audit_type'
   ) THEN
     ALTER TABLE capability_report_audit_prompt
-      ADD COLUMN `audit_type` varchar(16) COLLATE utf8mb4_bin NOT NULL DEFAULT 'revision' COMMENT '审核类型：initial/revision'
+      ADD COLUMN `audit_type` ENUM('initial', 'revision') COLLATE utf8mb4_bin NOT NULL DEFAULT 'revision' COMMENT '审核类型：initial/revision'
       AFTER `enabled`;
   END IF;
 
@@ -37,7 +35,7 @@ BEGIN
       AND column_name = 'audit_type'
   ) THEN
     ALTER TABLE capability_report_audit
-      ADD COLUMN `audit_type` varchar(16) COLLATE utf8mb4_bin NOT NULL DEFAULT 'revision' COMMENT '审核类型：initial/revision'
+      ADD COLUMN `audit_type` ENUM('initial', 'revision') COLLATE utf8mb4_bin NOT NULL DEFAULT 'revision' COMMENT '审核类型：initial/revision'
       AFTER `status`;
   END IF;
 
@@ -64,6 +62,55 @@ END$$
 DELIMITER ;
 CALL ensure_dual_audit_type_columns_and_indexes();
 DROP PROCEDURE ensure_dual_audit_type_columns_and_indexes;
+
+-- Normalize pre-006 varchar values before converting existing columns to ENUM.
+UPDATE capability_report_audit_prompt
+SET audit_type = 'revision'
+WHERE audit_type IS NULL
+   OR audit_type = ''
+   OR audit_type NOT IN ('initial', 'revision');
+
+UPDATE capability_report_audit
+SET audit_type = 'revision'
+WHERE audit_type IS NULL
+   OR audit_type = ''
+   OR audit_type NOT IN ('initial', 'revision');
+
+DROP PROCEDURE IF EXISTS ensure_dual_audit_type_enum_values;
+DELIMITER $$
+CREATE PROCEDURE ensure_dual_audit_type_enum_values()
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'capability_report_audit_prompt'
+      AND column_name = 'audit_type'
+      AND LOWER(REPLACE(column_type, ' ', '')) <> 'enum(''initial'',''revision'')'
+  ) THEN
+    ALTER TABLE capability_report_audit_prompt
+      MODIFY COLUMN `audit_type` ENUM('initial', 'revision') COLLATE utf8mb4_bin NOT NULL DEFAULT 'revision' COMMENT '审核类型：initial/revision'
+      AFTER `enabled`;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'capability_report_audit'
+      AND column_name = 'audit_type'
+      AND LOWER(REPLACE(column_type, ' ', '')) <> 'enum(''initial'',''revision'')'
+  ) THEN
+    ALTER TABLE capability_report_audit
+      MODIFY COLUMN `audit_type` ENUM('initial', 'revision') COLLATE utf8mb4_bin NOT NULL DEFAULT 'revision' COMMENT '审核类型：initial/revision'
+      AFTER `status`;
+  END IF;
+END$$
+DELIMITER ;
+CALL ensure_dual_audit_type_enum_values();
+DROP PROCEDURE ensure_dual_audit_type_enum_values;
+
+SET @dual_audit_types_first_run := (
+  SELECT COUNT(*) = 0 FROM capability_report_ai_config
+);
 
 INSERT INTO capability_report_ai_config
   (`api_url`, `model_name`, `api_key`)
@@ -95,14 +142,9 @@ WHERE NOT EXISTS (
 );
 
 UPDATE capability_report_audit_prompt
-SET audit_type = 'revision'
-WHERE audit_type IS NULL
-   OR audit_type = ''
-   OR audit_type NOT IN ('initial', 'revision');
-
-UPDATE capability_report_audit_prompt
 SET enabled = 0
-WHERE enabled = 1;
+WHERE @dual_audit_types_first_run = 1
+  AND enabled = 1;
 
 INSERT INTO capability_report_audit_prompt
   (`name`, `prompt_content`, `version`, `enabled`, `audit_type`, `model_name`, `api_url`, `api_key`)
@@ -121,7 +163,7 @@ SELECT
 6. 文档中是否存在明显占位符、测试文字、未替换模板内容或无法解释的空值。
 
 只根据输入中可读取的内容判断。证据不足时明确说明无法判断，不得编造文档内容。发现问题时指出原文位置或相关章节，并给出可执行的修改建议。',
-  1,
+  0,
   1,
   'initial',
   config.model_name,
@@ -135,6 +177,7 @@ WHERE config.id = (
     SELECT 1 FROM capability_report_audit_prompt
     WHERE name = '初始审核提示词'
       AND version = 1
+      AND audit_type = 'initial'
   );
 
 INSERT INTO capability_report_audit_prompt
@@ -153,7 +196,7 @@ SELECT
 5. 是否识别容量瓶颈、资源风险、趋势变化和影响范围，风险等级是否与证据匹配。
 6. 扩容、优化或治理建议是否具体可执行，是否包含对象、依据、优先级或验证方式。
 只根据输入中可读取的内容判断。证据不足时明确说明无法判断，不得编造指标、服务器数量或图表结论。发现问题时引用相关章节或表格依据，并给出可执行的修改建议。',
-  1,
+  0,
   1,
   'revision',
   config.model_name,
@@ -167,23 +210,30 @@ WHERE config.id = (
     SELECT 1 FROM capability_report_audit_prompt
     WHERE name = '修订审核提示词'
       AND version = 1
+      AND audit_type = 'revision'
   );
 
-UPDATE capability_report_audit_prompt
-SET enabled = 0
-WHERE audit_type IN ('initial', 'revision');
+UPDATE capability_report_audit_prompt seed
+LEFT JOIN capability_report_audit_prompt active
+  ON active.audit_type = seed.audit_type
+ AND active.enabled = 1
+ AND active.id <> seed.id
+SET seed.enabled = 1
+WHERE seed.name = '初始审核提示词'
+  AND seed.version = 1
+  AND seed.audit_type = 'initial'
+  AND active.id IS NULL;
 
-UPDATE capability_report_audit_prompt
-SET enabled = 1
-WHERE name = '初始审核提示词'
-  AND version = 1
-  AND audit_type = 'initial';
-
-UPDATE capability_report_audit_prompt
-SET enabled = 1
-WHERE name = '修订审核提示词'
-  AND version = 1
-  AND audit_type = 'revision';
+UPDATE capability_report_audit_prompt seed
+LEFT JOIN capability_report_audit_prompt active
+  ON active.audit_type = seed.audit_type
+ AND active.enabled = 1
+ AND active.id <> seed.id
+SET seed.enabled = 1
+WHERE seed.name = '修订审核提示词'
+  AND seed.version = 1
+  AND seed.audit_type = 'revision'
+  AND active.id IS NULL;
 
 UPDATE capability_report_audit audit
 JOIN capability_report_version version ON version.id = audit.version_id
