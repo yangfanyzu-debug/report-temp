@@ -140,7 +140,10 @@ def parse_chat_stream(
         if not payload:
             continue
         chunk = json.loads(payload)
-        delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        delta = choices[0].get("delta", {}).get("content") or ""
         if delta:
             content_parts.append(delta)
             if on_delta:

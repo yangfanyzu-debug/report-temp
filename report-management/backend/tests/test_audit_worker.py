@@ -219,6 +219,7 @@ class AuditWorkerTest(unittest.TestCase):
             b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
             b'data: {"choices":[{"delta":{"content":"{\\"summary\\":"}}]}\n',
             b'data: {"choices":[{"delta":{"content":"{}}"}}]}\n',
+            b'data: {"choices":[],"usage":{"total_tokens":1024}}\n',
             b'data: [DONE]\n',
         ]
 
