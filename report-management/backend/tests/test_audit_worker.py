@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -13,6 +17,8 @@ from app.services.audit_input import build_audit_input  # noqa: E402
 from app.services.agent_worker import AgentWorker  # noqa: E402
 from app.services.audit_worker import AuditWorker  # noqa: E402
 from app.services.deepseek_client import (  # noqa: E402
+    DeepSeekClient,
+    DeepSeekNotConfigured,
     chat_completions_url,
     parse_chat_stream,
     parse_model_result,
@@ -34,26 +40,38 @@ def write_docx(path: Path) -> None:
 
 
 class FakeAuditRepository:
-    def __init__(self, job=None, prompt=None):
+    def __init__(self, job=None, prompts=None, model_config=None):
         self.job = job
-        self.prompt = prompt
+        self.prompts = prompts or {}
+        self.model_config = model_config or {
+            "apiUrl": "https://example.test/v1",
+            "modelName": "shared-model",
+            "apiKey": "shared-secret",
+        }
+        self.requested_prompt_types = []
         self.running = []
         self.completed = []
         self.errors = []
         self.events = []
         self.checkpoints = [{"id": 1, "name": "章节完整性", "content": "检查章节", "sortOrder": 10, "enabled": True}]
+        self.checkpoint_reads = 0
         self.snapshots = []
 
     def next_pending_audit(self):
         return self.job
 
-    def get_active_prompt(self):
-        return self.prompt
+    def get_ai_config(self):
+        return self.model_config
 
-    def mark_audit_running(self, audit_id, prompt):
-        self.running.append((audit_id, prompt["version"]))
+    def get_active_prompt(self, audit_type):
+        self.requested_prompt_types.append(audit_type)
+        return self.prompts.get(audit_type)
+
+    def mark_audit_running(self, audit_id, prompt, model_config):
+        self.running.append((audit_id, prompt["version"], model_config["modelName"]))
 
     def get_active_checkpoints(self):
+        self.checkpoint_reads += 1
         return self.checkpoints
 
     def save_checkpoint_snapshot(self, audit_id, checkpoints):
@@ -78,8 +96,8 @@ class FakeModelClient:
         }
         self.calls = []
 
-    def audit_report(self, prompt, audit_input, on_delta=None):
-        self.calls.append((prompt, audit_input))
+    def audit_report(self, model_config, prompt, audit_input, on_delta=None):
+        self.calls.append((model_config, prompt, audit_input))
         if on_delta:
             on_delta("审核结论：通过\n")
             on_delta("未发现明显问题。")
@@ -183,18 +201,23 @@ class AuditWorkerTest(unittest.TestCase):
                 "systemId": "credit-card-center",
                 "title": "报告",
                 "reportMonth": "2025年08月",
+                "auditType": "initial",
             }
-            prompt = {"id": 1, "version": 2, "modelName": "deepseek-chat", "promptContent": "请审核"}
-            repository = FakeAuditRepository(job, prompt)
+            prompt = {"id": 1, "version": 2, "promptContent": "请审核"}
+            repository = FakeAuditRepository(job, {"initial": prompt})
             model_client = FakeModelClient()
 
             result = AuditWorker(repository, model_client).run_once()
 
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "completed"})
-        self.assertEqual(repository.running, [(99, 2)])
+        self.assertEqual(repository.running, [(99, 2, "shared-model")])
         self.assertEqual(repository.completed[0][0:2], (99, 10))
-        self.assertEqual(repository.snapshots[0][1][0]["name"], "章节完整性")
-        self.assertEqual(model_client.calls[0][1]["report"]["systemId"], "credit-card-center")
+        self.assertEqual(repository.requested_prompt_types, ["initial"])
+        self.assertEqual(repository.checkpoint_reads, 0)
+        self.assertEqual(repository.snapshots, [])
+        self.assertEqual(model_client.calls[0][0]["modelName"], "shared-model")
+        self.assertEqual(model_client.calls[0][2]["report"]["systemId"], "credit-card-center")
+        self.assertNotIn("checkpoints", model_client.calls[0][2])
         self.assertEqual(repository.events[0][2], "started")
         self.assertTrue(any(event[1] == "model" for event in repository.events))
         self.assertEqual(repository.events[-1][2], "completed")
@@ -204,14 +227,35 @@ class AuditWorkerTest(unittest.TestCase):
 
         self.assertEqual(result, {"processed": False, "reason": "no_pending_audit"})
 
-    def test_worker_marks_error_when_prompt_missing(self):
-        repository = FakeAuditRepository({"auditId": 99, "versionId": 10})
+    def test_worker_marks_error_when_type_prompt_missing(self):
+        for audit_type, label in (("initial", "初始"), ("revision", "修订")):
+            with self.subTest(audit_type=audit_type):
+                repository = FakeAuditRepository(
+                    {"auditId": 99, "versionId": 10, "auditType": audit_type}
+                )
+
+                result = AuditWorker(repository, FakeModelClient()).run_once()
+
+                message = f"未配置启用的{label}审核提示词"
+                self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
+                self.assertEqual(repository.errors, [(99, 10, message)])
+                self.assertEqual(repository.requested_prompt_types, [audit_type])
+                self.assertEqual(repository.events[-1][2], "configuration")
+
+    def test_worker_marks_error_when_shared_model_config_missing_without_leaking_key(self):
+        repository = FakeAuditRepository(
+            {"auditId": 99, "versionId": 10, "auditType": "initial"},
+            {"initial": {"id": 1, "version": 1, "promptContent": "请审核"}},
+            model_config={},
+        )
+        repository.model_config = {"apiUrl": "", "modelName": "", "apiKey": "secret-must-not-leak"}
 
         result = AuditWorker(repository, FakeModelClient()).run_once()
 
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
-        self.assertEqual(repository.errors, [(99, 10, "未配置启用的审核提示词")])
-        self.assertEqual(repository.events[-1][2], "configuration")
+        self.assertEqual(repository.errors, [(99, 10, "未配置共用模型连接")])
+        self.assertNotIn("secret-must-not-leak", str(repository.events))
+        self.assertEqual(repository.requested_prompt_types, [])
 
     def test_worker_marks_error_when_file_missing(self):
         job = {
@@ -222,15 +266,169 @@ class AuditWorkerTest(unittest.TestCase):
             "systemId": "credit-card-center",
             "title": "报告",
             "reportMonth": "2025年08月",
+            "auditType": "revision",
         }
-        prompt = {"id": 1, "version": 2, "modelName": "deepseek-chat", "promptContent": "请审核"}
-        repository = FakeAuditRepository(job, prompt)
+        prompt = {"id": 1, "version": 2, "promptContent": "请审核"}
+        repository = FakeAuditRepository(job, {"revision": prompt})
 
         result = AuditWorker(repository, FakeModelClient()).run_once()
 
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
         self.assertEqual(repository.errors, [(99, 10, "报告文件不存在")])
         self.assertEqual(repository.events[-1][2], "failed")
+
+    def test_worker_selects_only_the_revision_prompt(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = Path(temporary_dir) / "报告.docx"
+            write_docx(path)
+            job = {
+                "auditId": 100,
+                "reportId": 1,
+                "versionId": 11,
+                "filePath": str(path),
+                "fileName": "报告.docx",
+                "systemId": "credit-card-center",
+                "title": "报告",
+                "reportMonth": "2025年08月",
+                "auditType": "revision",
+            }
+            prompts = {
+                "initial": {"id": 1, "version": 1, "promptContent": "初始提示词"},
+                "revision": {"id": 2, "version": 3, "promptContent": "修订提示词"},
+            }
+            repository = FakeAuditRepository(job, prompts)
+            model_client = FakeModelClient()
+
+            result = AuditWorker(repository, model_client).run_once()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(repository.requested_prompt_types, ["revision"])
+        self.assertEqual(model_client.calls[0][1]["promptContent"], "修订提示词")
+        self.assertNotIn("checkpoints", model_client.calls[0][2])
+
+    def test_repository_only_claims_typed_audits_and_returns_job_type(self):
+        from app.repositories.audits import MySqlAuditRepository
+
+        class Cursor:
+            def __init__(self):
+                self.statement = ""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def execute(self, sql, params=None):
+                self.statement = " ".join(sql.split())
+
+            def fetchone(self):
+                return {
+                    "audit_id": 99,
+                    "report_id": 1,
+                    "version_id": 10,
+                    "audit_type": "initial",
+                    "file_path": "/tmp/report.docx",
+                    "file_name": "report.docx",
+                    "systemId": "credit-card-center",
+                    "title": "报告",
+                    "report_month": "2026年08月",
+                }
+
+        class Database:
+            def __init__(self):
+                self.cursor = Cursor()
+
+            @contextmanager
+            def connection(self):
+                yield SimpleNamespace(cursor=lambda: self.cursor)
+
+        database = Database()
+
+        job = MySqlAuditRepository(database).next_pending_audit()
+
+        self.assertIn("audit.audit_type IN ('initial', 'revision')", database.cursor.statement)
+        self.assertEqual(job["auditType"], "initial")
+
+    def test_audit_report_uses_shared_model_config_and_runtime_output_protocol(self):
+        settings = SimpleNamespace(
+            deepseek_url="https://legacy-env.test/v1",
+            deepseek_key="legacy-env-secret",
+            deepseek_model="legacy-env-model",
+        )
+        client = DeepSeekClient(settings)
+        response_lines = [
+            (
+                "data: "
+                + json.dumps(
+                    {"choices": [{"delta": {"content": "审核结论：通过\n\n## 审核总结\n内容完整。"}}]},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            ).encode("utf-8"),
+            b"data: [DONE]\n",
+        ]
+
+        class Response:
+            def __enter__(self):
+                return iter(response_lines)
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        with patch("app.services.deepseek_client.urllib.request.urlopen", return_value=Response()) as urlopen:
+            result = client.audit_report(
+                {
+                    "apiUrl": "https://shared-config.test/v1",
+                    "apiKey": "shared-config-secret",
+                    "modelName": "shared-config-model",
+                },
+                {
+                    "promptContent": "只审核可读取内容",
+                    "apiUrl": "https://legacy-prompt.test/v1",
+                    "apiKey": "legacy-prompt-secret",
+                    "modelName": "legacy-prompt-model",
+                },
+                {"report": {"title": "报告"}},
+            )
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        system_message = payload["messages"][0]["content"]
+        user_message = payload["messages"][1]["content"]
+        self.assertEqual(request.full_url, "https://shared-config.test/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer shared-config-secret")
+        self.assertEqual(payload["model"], "shared-config-model")
+        self.assertIn("首行必须为“审核结论：通过”或“审核结论：不通过”", system_message)
+        self.assertIn("后续使用中文 Markdown", system_message)
+        self.assertIn("不要输出 JSON", system_message)
+        self.assertNotIn("检查点", user_message)
+        self.assertEqual(result["conclusion"], "passed")
+
+    def test_audit_report_does_not_fall_back_to_prompt_or_environment_model_config(self):
+        settings = SimpleNamespace(
+            deepseek_url="https://legacy-env.test/v1",
+            deepseek_key="legacy-env-secret",
+            deepseek_model="legacy-env-model",
+        )
+        client = DeepSeekClient(settings)
+
+        with patch("app.services.deepseek_client.urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(DeepSeekNotConfigured, "共用模型连接") as raised:
+                client.audit_report(
+                    {"apiUrl": "", "apiKey": "", "modelName": ""},
+                    {
+                        "promptContent": "审核提示词",
+                        "apiUrl": "https://legacy-prompt.test/v1",
+                        "apiKey": "legacy-prompt-secret",
+                        "modelName": "legacy-prompt-model",
+                    },
+                    {"report": {"title": "报告"}},
+                )
+
+        urlopen.assert_not_called()
+        self.assertNotIn("legacy-prompt-secret", str(raised.exception))
+        self.assertNotIn("legacy-env-secret", str(raised.exception))
 
     def test_agent_worker_streams_and_completes_reply(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

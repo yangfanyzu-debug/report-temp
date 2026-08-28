@@ -255,8 +255,14 @@ class MySqlReportRepository:
                         [report_id, file_name, file_path, file_size, payload.get("source", "batch")],
                     )
                     version_id = int(cursor.lastrowid)
-                audit_id = self._create_pending_audit(cursor, report_id, version_id)
-        return {"reportId": report_id, "versionId": version_id, "auditId": audit_id, "auditStatus": "pending"}
+                audit_id = self._create_pending_audit(cursor, report_id, version_id, "initial")
+        return {
+            "reportId": report_id,
+            "versionId": version_id,
+            "auditId": audit_id,
+            "auditType": "initial",
+            "auditStatus": "pending",
+        }
 
     def prepare_uploaded_version(self, report_id: int) -> dict[str, Any] | None:
         with self.database.connection() as connection:
@@ -301,12 +307,15 @@ class MySqlReportRepository:
                     ],
                 )
                 version_id = int(cursor.lastrowid)
-                audit_id = self._create_pending_audit(cursor, payload["reportId"], version_id)
+                audit_id = self._create_pending_audit(
+                    cursor, payload["reportId"], version_id, "revision"
+                )
         return {
             "reportId": payload["reportId"],
             "versionId": version_id,
             "versionNo": payload["versionNo"],
             "auditId": audit_id,
+            "auditType": "revision",
             "auditStatus": "pending",
         }
 
@@ -346,23 +355,28 @@ class MySqlReportRepository:
                 params.append(filters["auditStatus"])
         return (f"WHERE {' AND '.join(clauses)}" if clauses else "", params)
 
-    def _create_pending_audit(self, cursor: Any, report_id: int, version_id: int) -> int:
+    def _create_pending_audit(
+        self, cursor: Any, report_id: int, version_id: int, audit_type: str
+    ) -> int:
+        audit_type_labels = {"initial": "初始审核", "revision": "修订审核"}
+        if audit_type not in audit_type_labels:
+            raise ValueError("不支持的审核类型")
         cursor.execute(
             """
             INSERT INTO capability_report_audit
-              (`report_id`, `version_id`, `status`, `summary`, `result_data`)
-            VALUES (%s, %s, 'pending', NULL, NULL)
+              (`report_id`, `version_id`, `audit_type`, `status`, `summary`, `result_data`)
+            VALUES (%s, %s, %s, 'pending', NULL, NULL)
             """,
-            [report_id, version_id],
+            [report_id, version_id, audit_type],
         )
         audit_id = int(cursor.lastrowid)
         cursor.execute(
             """
             INSERT INTO capability_report_audit_event
               (`audit_id`, `event_type`, `phase`, `content`)
-            VALUES (%s, 'system', 'queued', '报告已登记，等待AI审核')
+            VALUES (%s, 'system', 'queued', %s)
             """,
-            [audit_id],
+            [audit_id, f"报告已登记，等待AI执行{audit_type_labels[audit_type]}"],
         )
         return audit_id
 

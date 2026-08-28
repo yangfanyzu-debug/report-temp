@@ -77,7 +77,9 @@ class AuditRepository(Protocol):
     def next_pending_audit(self) -> dict[str, Any] | None:
         ...
 
-    def mark_audit_running(self, audit_id: int, prompt: dict[str, Any]) -> None:
+    def mark_audit_running(
+        self, audit_id: int, prompt: dict[str, Any], model_config: dict[str, Any]
+    ) -> None:
         ...
 
     def mark_audit_complete(self, audit_id: int, version_id: int, result: dict[str, Any]) -> None:
@@ -125,18 +127,19 @@ class MySqlAuditRepository:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT version.id
+                    SELECT version.id, version.version_type
                       FROM capability_report_version version
                      WHERE version.id = %s AND version.report_id = %s
                      FOR UPDATE
                     """,
                     [version_id, report_id],
                 )
-                if cursor.fetchone() is None:
+                version = cursor.fetchone()
+                if version is None:
                     return None
                 cursor.execute(
                     """
-                    SELECT id, status
+                    SELECT id, status, audit_type
                       FROM capability_report_audit
                      WHERE version_id = %s
                      ORDER BY create_time DESC, id DESC
@@ -145,30 +148,37 @@ class MySqlAuditRepository:
                     [version_id],
                 )
                 latest = cursor.fetchone()
+                audit_type = latest.get("audit_type") if latest else None
+                if audit_type is None:
+                    audit_type = "initial" if version["version_type"] == "initial" else "revision"
+                if audit_type not in {"initial", "revision"}:
+                    raise ValueError("不支持的审核类型")
                 if latest and latest["status"] in {"pending", "running"}:
                     return {
                         "reportId": report_id,
                         "versionId": version_id,
                         "auditId": int(latest["id"]),
+                        "auditType": audit_type,
                         "auditStatus": latest["status"],
                         "created": False,
                     }
                 cursor.execute(
                     """
                     INSERT INTO capability_report_audit
-                      (`report_id`, `version_id`, `status`, `summary`, `result_data`)
-                    VALUES (%s, %s, 'pending', NULL, NULL)
+                      (`report_id`, `version_id`, `audit_type`, `status`, `summary`, `result_data`)
+                    VALUES (%s, %s, %s, 'pending', NULL, NULL)
                     """,
-                    [report_id, version_id],
+                    [report_id, version_id, audit_type],
                 )
                 audit_id = int(cursor.lastrowid)
+                audit_type_label = "初始审核" if audit_type == "initial" else "修订审核"
                 cursor.execute(
                     """
                     INSERT INTO capability_report_audit_event
                       (`audit_id`, `event_type`, `phase`, `content`)
-                    VALUES (%s, 'system', 'queued', '用户重新发起AI审核，等待后台处理')
+                    VALUES (%s, 'system', 'queued', %s)
                     """,
-                    [audit_id],
+                    [audit_id, f"用户重新发起{audit_type_label}，等待后台处理"],
                 )
                 cursor.execute(
                     "UPDATE capability_report_version SET audit_status = 'pending' WHERE id = %s",
@@ -178,6 +188,7 @@ class MySqlAuditRepository:
             "reportId": report_id,
             "versionId": version_id,
             "auditId": audit_id,
+            "auditType": audit_type,
             "auditStatus": "pending",
             "created": True,
         }
@@ -666,6 +677,7 @@ class MySqlAuditRepository:
                       audit.id AS audit_id,
                       audit.report_id,
                       audit.version_id,
+                      audit.audit_type,
                       version.file_path,
                       version.file_name,
                       report.systemId,
@@ -675,6 +687,7 @@ class MySqlAuditRepository:
                     JOIN capability_report_version version ON version.id = audit.version_id
                     JOIN capability_report_log report ON report.id = audit.report_id
                     WHERE audit.status = 'pending'
+                      AND audit.audit_type IN ('initial', 'revision')
                     ORDER BY audit.create_time ASC, audit.id ASC
                     LIMIT 1
                     """
@@ -686,6 +699,7 @@ class MySqlAuditRepository:
             "auditId": row["audit_id"],
             "reportId": row["report_id"],
             "versionId": row["version_id"],
+            "auditType": row["audit_type"],
             "filePath": row["file_path"],
             "fileName": row["file_name"],
             "systemId": row["systemId"],
@@ -693,7 +707,9 @@ class MySqlAuditRepository:
             "reportMonth": row["report_month"],
         }
 
-    def mark_audit_running(self, audit_id: int, prompt: dict[str, Any]) -> None:
+    def mark_audit_running(
+        self, audit_id: int, prompt: dict[str, Any], model_config: dict[str, Any]
+    ) -> None:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -707,7 +723,7 @@ class MySqlAuditRepository:
                            error_message = NULL
                      WHERE id = %s
                     """,
-                    [prompt["id"], prompt["version"], prompt["modelName"], audit_id],
+                    [prompt["id"], prompt["version"], model_config["modelName"], audit_id],
                 )
 
     def mark_audit_complete(self, audit_id: int, version_id: int, result: dict[str, Any]) -> None:

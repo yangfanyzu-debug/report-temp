@@ -19,15 +19,16 @@ class DeepSeekClient:
 
     def audit_report(
         self,
+        model_config: dict[str, Any],
         prompt: dict[str, Any],
         audit_input: dict[str, Any],
         on_delta: Callable[[str], None] | None = None,
     ) -> dict[str, str]:
-        api_url = prompt.get("apiUrl") or self.settings.deepseek_url
-        api_key = prompt.get("apiKey") or self.settings.deepseek_key
-        model_name = prompt.get("modelName") or self.settings.deepseek_model
-        if not api_url or not api_key:
-            raise DeepSeekNotConfigured("DeepSeek API URL 或 Key 未配置")
+        api_url = str(model_config.get("apiUrl") or "").strip()
+        api_key = str(model_config.get("apiKey") or "").strip()
+        model_name = str(model_config.get("modelName") or "").strip()
+        if not api_url or not api_key or not model_name:
+            raise DeepSeekNotConfigured("共用模型连接配置不完整")
 
         request_payload = {
             "model": model_name,
@@ -35,13 +36,13 @@ class DeepSeekClient:
                 {
                     "role": "system",
                     "content": prompt["promptContent"]
-                    + "\n\n【本次输出协议】不要输出 JSON。首行必须是“审核结论：通过”或“审核结论：不通过”；"
-                    "后续使用中文 Markdown 输出审核总结、发现的问题和修改建议。此协议优先于上文中的旧输出格式要求。",
+                    + "\n\n【本次输出协议】首行必须为“审核结论：通过”或“审核结论：不通过”；"
+                    "后续使用中文 Markdown 输出审核总结、发现的问题和修改建议；不要输出 JSON。"
+                    "此协议优先于上文中的旧输出格式要求。",
                 },
                 {
                     "role": "user",
-                    "content": "请根据检查点审核以下报告。首行必须是“审核结论：通过”或“审核结论：不通过”；"
-                    "之后使用中文 Markdown 输出审核总结、发现的问题和修改建议，不要输出 JSON。\n"
+                    "content": "请审核以下报告，并严格遵循系统消息中的输出协议。\n"
                     + json.dumps(audit_input, ensure_ascii=False),
                 },
             ],

@@ -5,7 +5,9 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -23,6 +25,57 @@ def make_docx(content: str = "报告内容") -> io.BytesIO:
     document.save(stream)
     stream.seek(0)
     return stream
+
+
+class RecordingCursor:
+    def __init__(self, version_type: str = "uploaded", latest_audit: dict[str, Any] | None = None):
+        self.version_type = version_type
+        self.latest_audit = latest_audit
+        self.executions: list[tuple[str, list[Any]]] = []
+        self.last_sql = ""
+        self.lastrowid = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql: str, params: list[Any] | None = None):
+        self.last_sql = " ".join(sql.split())
+        self.executions.append((self.last_sql, list(params or [])))
+        if self.last_sql.startswith("INSERT INTO capability_report_log"):
+            self.lastrowid = 1
+        elif self.last_sql.startswith("INSERT INTO capability_report_version"):
+            self.lastrowid = 9 if "'initial'" in self.last_sql else 11
+        elif self.last_sql.startswith("INSERT INTO capability_report_audit "):
+            self.lastrowid = 88 if self.lastrowid == 9 else 101
+
+    def fetchone(self):
+        if "FROM capability_report_version version" in self.last_sql:
+            return {"id": 10, "version_type": self.version_type}
+        if "FROM capability_report_audit" in self.last_sql:
+            return self.latest_audit
+        if "SELECT id FROM capability_report_version" in self.last_sql:
+            return None
+        return None
+
+
+class RecordingConnection:
+    def __init__(self, cursor: RecordingCursor):
+        self.recording_cursor = cursor
+
+    def cursor(self):
+        return self.recording_cursor
+
+
+class RecordingDatabase:
+    def __init__(self, cursor: RecordingCursor):
+        self.cursor = cursor
+
+    @contextmanager
+    def connection(self):
+        yield RecordingConnection(self.cursor)
 
 
 class FakeReportRepository:
@@ -179,6 +232,7 @@ class FakeReportRepository:
             "reportId": 1,
             "versionId": 10,
             "auditId": 101,
+            "auditType": "revision",
             "auditStatus": "pending",
             "created": True,
         }
@@ -212,7 +266,13 @@ class FakeReportRepository:
 
     def register_initial_report(self, payload):
         self.registered_payload = payload
-        return {"reportId": 1, "versionId": 9, "auditId": 88, "auditStatus": "pending"}
+        return {
+            "reportId": 1,
+            "versionId": 9,
+            "auditId": 88,
+            "auditType": "initial",
+            "auditStatus": "pending",
+        }
 
     def prepare_uploaded_version(self, report_id):
         if report_id != 1:
@@ -227,7 +287,14 @@ class FakeReportRepository:
 
     def create_uploaded_version(self, payload):
         self.created_upload_payload = payload
-        return {"reportId": 1, "versionId": 11, "versionNo": 3, "auditId": 100, "auditStatus": "pending"}
+        return {
+            "reportId": 1,
+            "versionId": 11,
+            "versionNo": 3,
+            "auditId": 100,
+            "auditType": "revision",
+            "auditStatus": "pending",
+        }
 
     def get_version_file(self, version_id):
         if version_id != 10:
@@ -400,7 +467,7 @@ class ReportRoutesTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json, {"reportId": 1, "versionId": 9, "auditId": 88, "auditStatus": "pending"})
+        self.assertEqual(response.json["auditType"], "initial")
         self.assertEqual(self.repository.registered_payload["source"], "batch")
         self.assertEqual(self.repository.registered_payload["jiraId"], "JIRA-10086")
 
@@ -425,6 +492,7 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["auditStatus"], "pending")
+        self.assertEqual(response.json["auditType"], "initial")
         payload = self.repository.registered_payload
         self.assertEqual(payload["source"], "batch")
         self.assertEqual(payload["jiraId"], "容量审核-测试-001")
@@ -491,6 +559,7 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["versionNo"], 3)
+        self.assertEqual(response.json["auditType"], "revision")
         self.assertEqual(self.repository.created_upload_payload["fileName"], "报告 修订版.docx")
         self.assertEqual(self.repository.created_upload_payload["uploader"], "张三")
         saved_path = Path(self.repository.created_upload_payload["filePath"])
@@ -583,7 +652,91 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json["auditStatus"], "pending")
+        self.assertEqual(response.json["auditType"], "revision")
         self.assertTrue(response.json["created"])
+
+    def test_report_repository_writes_explicit_audit_types(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        initial_cursor = RecordingCursor()
+        initial_result = MySqlReportRepository(RecordingDatabase(initial_cursor)).register_initial_report(
+            {
+                "systemId": "credit-card-center",
+                "title": "初始报告",
+                "reportMonth": "2026年08月",
+                "filePath": "/tmp/initial.docx",
+                "fileName": "initial.docx",
+                "fileSize": 100,
+            }
+        )
+        uploaded_cursor = RecordingCursor()
+        uploaded_result = MySqlReportRepository(RecordingDatabase(uploaded_cursor)).create_uploaded_version(
+            {
+                "reportId": 1,
+                "versionNo": 2,
+                "fileName": "revision.docx",
+                "filePath": "/tmp/revision.docx",
+                "fileSize": 200,
+                "uploader": "张三",
+            }
+        )
+
+        initial_insert = next(
+            item for item in initial_cursor.executions if item[0].startswith("INSERT INTO capability_report_audit ")
+        )
+        uploaded_insert = next(
+            item for item in uploaded_cursor.executions if item[0].startswith("INSERT INTO capability_report_audit ")
+        )
+        self.assertEqual(initial_insert[1], [1, 9, "initial"])
+        self.assertEqual(uploaded_insert[1], [1, 11, "revision"])
+        self.assertEqual(initial_result["auditType"], "initial")
+        self.assertEqual(uploaded_result["auditType"], "revision")
+
+    def test_report_repository_rejects_unknown_audit_type(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        cursor = RecordingCursor()
+
+        with self.assertRaisesRegex(ValueError, "不支持的审核类型"):
+            MySqlReportRepository(None)._create_pending_audit(cursor, 1, 9, "other")
+
+        self.assertEqual(cursor.executions, [])
+
+    def test_retry_preserves_latest_audit_type(self):
+        from app.repositories.audits import MySqlAuditRepository
+
+        cursor = RecordingCursor(
+            version_type="initial",
+            latest_audit={"id": 90, "status": "failed", "audit_type": "revision"},
+        )
+
+        result = MySqlAuditRepository(RecordingDatabase(cursor)).retry_version_audit(1, 10)
+
+        audit_insert = next(
+            item for item in cursor.executions if item[0].startswith("INSERT INTO capability_report_audit ")
+        )
+        queued_event = next(
+            item for item in cursor.executions if item[0].startswith("INSERT INTO capability_report_audit_event")
+        )
+        self.assertEqual(audit_insert[1], [1, 10, "revision"])
+        self.assertEqual(result["auditType"], "revision")
+        self.assertIn("修订审核", queued_event[1][-1])
+
+    def test_retry_falls_back_to_version_type_only_for_legacy_null_type(self):
+        from app.repositories.audits import MySqlAuditRepository
+
+        cursor = RecordingCursor(
+            version_type="uploaded",
+            latest_audit={"id": 90, "status": "failed", "audit_type": None},
+        )
+
+        result = MySqlAuditRepository(RecordingDatabase(cursor)).retry_version_audit(1, 10)
+
+        audit_insert = next(
+            item for item in cursor.executions if item[0].startswith("INSERT INTO capability_report_audit ")
+        )
+        self.assertEqual(audit_insert[1], [1, 10, "revision"])
+        self.assertEqual(result["auditType"], "revision")
 
     def test_retry_version_audit_returns_404_for_missing_version(self):
         response = self.client.post("/api/report-management/audits/reports/1/versions/999/retry")
