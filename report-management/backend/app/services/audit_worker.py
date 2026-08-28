@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from .audit_input import build_audit_input
+
+
+logger = logging.getLogger(__name__)
+
+
+class AuditConfigurationError(RuntimeError):
+    pass
 
 
 class AuditWorker:
@@ -17,40 +25,31 @@ class AuditWorker:
         if job is None:
             return {"processed": False, "reason": "no_pending_audit"}
 
-        model_config = self.repository.get_ai_config()
-        required_config_fields = ("apiUrl", "modelName", "apiKey")
-        if not model_config or not all(
-            str(model_config.get(field) or "").strip() for field in required_config_fields
-        ):
-            message = "未配置共用模型连接"
-            self.repository.append_audit_event(
-                job["auditId"], "error", "configuration", message
-            )
-            self.repository.mark_audit_error(job["auditId"], job["versionId"], message)
-            return {"processed": True, "auditId": job["auditId"], "status": "error"}
-
-        audit_type_labels = {"initial": "初始", "revision": "修订"}
-        audit_type = job.get("auditType")
-        if audit_type not in audit_type_labels:
-            message = "不支持的审核类型"
-            self.repository.append_audit_event(
-                job["auditId"], "error", "configuration", message
-            )
-            self.repository.mark_audit_error(job["auditId"], job["versionId"], message)
-            return {"processed": True, "auditId": job["auditId"], "status": "error"}
-
-        prompt = self.repository.get_active_prompt(audit_type)
-        if prompt is None:
-            message = f"未配置启用的{audit_type_labels[audit_type]}审核提示词"
-            self.repository.append_audit_event(
-                job["auditId"], "error", "configuration", message
-            )
-            self.repository.mark_audit_error(job["auditId"], job["versionId"], message)
-            return {"processed": True, "auditId": job["auditId"], "status": "error"}
-
-        self.repository.mark_audit_running(job["auditId"], prompt, model_config)
-        self.repository.append_audit_event(job["auditId"], "system", "started", "AI审核任务已开始")
         try:
+            model_config = self.repository.get_ai_config()
+            required_config_fields = ("apiUrl", "modelName", "apiKey")
+            if not model_config or not all(
+                str(model_config.get(field) or "").strip() for field in required_config_fields
+            ):
+                raise AuditConfigurationError("未配置共用模型连接")
+
+            audit_type_labels = {"initial": "初始", "revision": "修订"}
+            audit_type = job.get("auditType")
+            if audit_type not in audit_type_labels:
+                raise AuditConfigurationError("不支持的审核类型")
+
+            prompt = self.repository.get_active_prompt(audit_type)
+            if prompt is None:
+                raise AuditConfigurationError(
+                    f"未配置启用的{audit_type_labels[audit_type]}审核提示词"
+                )
+
+            self.repository.set_audit_execution_context(
+                job["auditId"], prompt, model_config
+            )
+            self.repository.append_audit_event(
+                job["auditId"], "system", "started", "AI审核任务已开始"
+            )
             if not Path(job["filePath"]).is_file():
                 raise FileNotFoundError("报告文件不存在")
             self.repository.append_audit_event(job["auditId"], "system", "extracting", "正在解析DOCX中的章节、正文和表格")
@@ -100,6 +99,28 @@ class AuditWorker:
             self.repository.append_audit_event(job["auditId"], "result", "completed", f"AI审核完成：{conclusion}")
             return {"processed": True, "auditId": job["auditId"], "status": "completed"}
         except Exception as error:
-            self.repository.append_audit_event(job["auditId"], "error", "failed", str(error))
-            self.repository.mark_audit_error(job["auditId"], job["versionId"], str(error))
-            return {"processed": True, "auditId": job["auditId"], "status": "error"}
+            return self._handle_error(job, error)
+
+    def _handle_error(self, job: dict[str, Any], error: Exception) -> dict[str, Any]:
+        message = str(error) or error.__class__.__name__
+        phase = "configuration" if isinstance(error, AuditConfigurationError) else "failed"
+
+        try:
+            self.repository.mark_audit_error(job["auditId"], job["versionId"], message)
+        except Exception:
+            logger.exception(
+                "记录审核错误状态失败 auditId=%s，原始错误：%s",
+                job["auditId"],
+                message,
+            )
+        try:
+            self.repository.append_audit_event(
+                job["auditId"], "error", phase, message
+            )
+        except Exception:
+            logger.exception(
+                "记录审核错误事件失败 auditId=%s，原始错误：%s",
+                job["auditId"],
+                message,
+            )
+        return {"processed": True, "auditId": job["auditId"], "status": "error"}

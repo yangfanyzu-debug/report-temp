@@ -90,7 +90,74 @@ class RecordingDatabase:
             raise
 
 
+class AuditClaimCursor:
+    def __init__(self, update_rowcount: int = 1):
+        self.update_rowcount = update_rowcount
+        self.rowcount = 0
+        self.last_sql = ""
+        self.executions: list[tuple[str, list[Any]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def execute(self, sql: str, params: list[Any] | None = None):
+        self.last_sql = " ".join(sql.split())
+        self.executions.append((self.last_sql, list(params or [])))
+        if self.last_sql.startswith("UPDATE capability_report_audit SET status = 'running'"):
+            self.rowcount = self.update_rowcount
+
+    def fetchone(self):
+        return {
+            "audit_id": 99,
+            "report_id": 1,
+            "version_id": 10,
+            "audit_type": "revision",
+            "file_path": "/tmp/report.docx",
+            "file_name": "report.docx",
+            "systemId": "credit-card-center",
+            "title": "报告",
+            "report_month": "2026年08月",
+        }
+
+
+class AuditClaimDatabase(RecordingDatabase):
+    def __init__(self, update_rowcount: int = 1):
+        self.cursor = AuditClaimCursor(update_rowcount)
+        self.connection_object = RecordingConnection(self.cursor)
+        self.commits = 0
+        self.rollbacks = 0
+
+
 class AuditRepositoryTest(unittest.TestCase):
+    def test_next_pending_audit_claims_with_lock_and_conditional_update(self):
+        database = AuditClaimDatabase()
+
+        job = MySqlAuditRepository(database).next_pending_audit()
+
+        select_sql, select_params = database.cursor.executions[0]
+        update_sql, update_params = database.cursor.executions[1]
+        self.assertIn("audit.audit_type IN ('initial', 'revision')", select_sql)
+        self.assertIn("FOR UPDATE", select_sql)
+        self.assertEqual(select_params, [])
+        self.assertIn("SET status = 'running'", update_sql)
+        self.assertIn("WHERE id = %s AND status = 'pending'", update_sql)
+        self.assertEqual(update_params, [99])
+        self.assertEqual(job["auditType"], "revision")
+        self.assertEqual(database.commits, 1)
+        self.assertEqual(database.rollbacks, 0)
+
+    def test_next_pending_audit_rolls_back_when_conditional_update_loses_race(self):
+        database = AuditClaimDatabase(update_rowcount=0)
+
+        job = MySqlAuditRepository(database).next_pending_audit()
+
+        self.assertIsNone(job)
+        self.assertEqual(database.commits, 0)
+        self.assertEqual(database.rollbacks, 1)
+
     def test_update_ai_config_preserves_empty_key(self):
         database = RecordingDatabase()
         repository = MySqlAuditRepository(database)

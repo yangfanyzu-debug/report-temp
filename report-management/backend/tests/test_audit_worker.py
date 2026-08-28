@@ -4,7 +4,6 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -40,7 +39,14 @@ def write_docx(path: Path) -> None:
 
 
 class FakeAuditRepository:
-    def __init__(self, job=None, prompts=None, model_config=None):
+    def __init__(
+        self,
+        job=None,
+        prompts=None,
+        model_config=None,
+        fail_event_phase=None,
+        mark_error_exception=None,
+    ):
         self.job = job
         self.prompts = prompts or {}
         self.model_config = model_config or {
@@ -48,8 +54,12 @@ class FakeAuditRepository:
             "modelName": "shared-model",
             "apiKey": "shared-secret",
         }
+        self.fail_event_phase = fail_event_phase
+        self.mark_error_exception = mark_error_exception
+        self.claim_calls = 0
+        self.claimed = False
         self.requested_prompt_types = []
-        self.running = []
+        self.execution_contexts = []
         self.completed = []
         self.errors = []
         self.events = []
@@ -58,6 +68,10 @@ class FakeAuditRepository:
         self.snapshots = []
 
     def next_pending_audit(self):
+        self.claim_calls += 1
+        if self.job is None or self.claimed:
+            return None
+        self.claimed = True
         return self.job
 
     def get_ai_config(self):
@@ -67,8 +81,10 @@ class FakeAuditRepository:
         self.requested_prompt_types.append(audit_type)
         return self.prompts.get(audit_type)
 
-    def mark_audit_running(self, audit_id, prompt, model_config):
-        self.running.append((audit_id, prompt["version"], model_config["modelName"]))
+    def set_audit_execution_context(self, audit_id, prompt, model_config):
+        self.execution_contexts.append(
+            (audit_id, prompt["version"], model_config["modelName"])
+        )
 
     def get_active_checkpoints(self):
         self.checkpoint_reads += 1
@@ -82,8 +98,12 @@ class FakeAuditRepository:
 
     def mark_audit_error(self, audit_id, version_id, message):
         self.errors.append((audit_id, version_id, message))
+        if self.mark_error_exception:
+            raise self.mark_error_exception
 
     def append_audit_event(self, audit_id, event_type, phase, content):
+        if phase == self.fail_event_phase:
+            raise RuntimeError(f"{phase} event failed")
         self.events.append((audit_id, event_type, phase, content))
         return len(self.events)
 
@@ -210,7 +230,7 @@ class AuditWorkerTest(unittest.TestCase):
             result = AuditWorker(repository, model_client).run_once()
 
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "completed"})
-        self.assertEqual(repository.running, [(99, 2, "shared-model")])
+        self.assertEqual(repository.execution_contexts, [(99, 2, "shared-model")])
         self.assertEqual(repository.completed[0][0:2], (99, 10))
         self.assertEqual(repository.requested_prompt_types, ["initial"])
         self.assertEqual(repository.checkpoint_reads, 0)
@@ -306,49 +326,74 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(model_client.calls[0][1]["promptContent"], "修订提示词")
         self.assertNotIn("checkpoints", model_client.calls[0][2])
 
-    def test_repository_only_claims_typed_audits_and_returns_job_type(self):
-        from app.repositories.audits import MySqlAuditRepository
+    def test_worker_executes_a_claimed_job_only_once(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = Path(temporary_dir) / "报告.docx"
+            write_docx(path)
+            job = {
+                "auditId": 99,
+                "reportId": 1,
+                "versionId": 10,
+                "filePath": str(path),
+                "fileName": "报告.docx",
+                "systemId": "credit-card-center",
+                "title": "报告",
+                "reportMonth": "2025年08月",
+                "auditType": "initial",
+            }
+            repository = FakeAuditRepository(
+                job,
+                {"initial": {"id": 1, "version": 2, "promptContent": "请审核"}},
+            )
+            model_client = FakeModelClient()
+            worker = AuditWorker(repository, model_client)
 
-        class Cursor:
-            def __init__(self):
-                self.statement = ""
+            first = worker.run_once()
+            second = worker.run_once()
 
-            def __enter__(self):
-                return self
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(second, {"processed": False, "reason": "no_pending_audit"})
+        self.assertEqual(repository.claim_calls, 2)
+        self.assertEqual(len(model_client.calls), 1)
+        self.assertEqual(len(repository.completed), 1)
 
-            def __exit__(self, exc_type, exc_value, traceback):
-                return False
+    def test_worker_marks_error_when_started_event_fails(self):
+        repository = FakeAuditRepository(
+            {"auditId": 99, "versionId": 10, "auditType": "initial"},
+            {"initial": {"id": 1, "version": 2, "promptContent": "请审核"}},
+            fail_event_phase="started",
+        )
 
-            def execute(self, sql, params=None):
-                self.statement = " ".join(sql.split())
+        result = AuditWorker(repository, FakeModelClient()).run_once()
 
-            def fetchone(self):
-                return {
-                    "audit_id": 99,
-                    "report_id": 1,
-                    "version_id": 10,
-                    "audit_type": "initial",
-                    "file_path": "/tmp/report.docx",
-                    "file_name": "report.docx",
-                    "systemId": "credit-card-center",
-                    "title": "报告",
-                    "report_month": "2026年08月",
-                }
+        self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
+        self.assertEqual(repository.errors, [(99, 10, "started event failed")])
 
-        class Database:
-            def __init__(self):
-                self.cursor = Cursor()
+    def test_worker_marks_error_when_prompt_fields_are_invalid(self):
+        repository = FakeAuditRepository(
+            {"auditId": 99, "versionId": 10, "auditType": "initial"},
+            {"initial": {"id": 1, "promptContent": "请审核"}},
+        )
 
-            @contextmanager
-            def connection(self):
-                yield SimpleNamespace(cursor=lambda: self.cursor)
+        result = AuditWorker(repository, FakeModelClient()).run_once()
 
-        database = Database()
+        self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
+        self.assertEqual(repository.errors, [(99, 10, "'version'")])
 
-        job = MySqlAuditRepository(database).next_pending_audit()
+    def test_worker_returns_stable_error_when_error_persistence_also_fails(self):
+        repository = FakeAuditRepository(
+            {"auditId": 99, "versionId": 10, "auditType": "initial"},
+            {"initial": {"id": 1, "version": 2, "promptContent": "请审核"}},
+            fail_event_phase="started",
+            mark_error_exception=RuntimeError("error persistence failed"),
+        )
 
-        self.assertIn("audit.audit_type IN ('initial', 'revision')", database.cursor.statement)
-        self.assertEqual(job["auditType"], "initial")
+        with self.assertLogs("app.services.audit_worker", level="ERROR") as logs:
+            result = AuditWorker(repository, FakeModelClient()).run_once()
+
+        self.assertEqual(result, {"processed": True, "auditId": 99, "status": "error"})
+        self.assertTrue(any("started event failed" in line for line in logs.output))
+        self.assertEqual(repository.errors, [(99, 10, "started event failed")])
 
     def test_audit_report_uses_shared_model_config_and_runtime_output_protocol(self):
         settings = SimpleNamespace(

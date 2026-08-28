@@ -7,6 +7,10 @@ from typing import Any, Protocol
 from ..database import Database
 
 
+class _AuditClaimLost(RuntimeError):
+    pass
+
+
 class AuditRepository(Protocol):
     def get_audit_detail(self, audit_id: int) -> dict[str, Any] | None:
         ...
@@ -77,7 +81,7 @@ class AuditRepository(Protocol):
     def next_pending_audit(self) -> dict[str, Any] | None:
         ...
 
-    def mark_audit_running(
+    def set_audit_execution_context(
         self, audit_id: int, prompt: dict[str, Any], model_config: dict[str, Any]
     ) -> None:
         ...
@@ -148,12 +152,22 @@ class MySqlAuditRepository:
                     [version_id],
                 )
                 latest = cursor.fetchone()
-                audit_type = latest.get("audit_type") if latest else None
+                latest_audit_type = latest.get("audit_type") if latest else None
+                audit_type = latest_audit_type
                 if audit_type is None:
                     audit_type = "initial" if version["version_type"] == "initial" else "revision"
                 if audit_type not in {"initial", "revision"}:
                     raise ValueError("不支持的审核类型")
                 if latest and latest["status"] in {"pending", "running"}:
+                    if latest_audit_type is None:
+                        cursor.execute(
+                            """
+                            UPDATE capability_report_audit
+                               SET audit_type = %s
+                             WHERE id = %s AND audit_type IS NULL
+                            """,
+                            [audit_type, latest["id"]],
+                        )
                     return {
                         "reportId": report_id,
                         "versionId": version_id,
@@ -669,30 +683,48 @@ class MySqlAuditRepository:
                 )
 
     def next_pending_audit(self) -> dict[str, Any] | None:
-        with self.database.connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT
-                      audit.id AS audit_id,
-                      audit.report_id,
-                      audit.version_id,
-                      audit.audit_type,
-                      version.file_path,
-                      version.file_name,
-                      report.systemId,
-                      report.title,
-                      report.report_month
-                    FROM capability_report_audit audit
-                    JOIN capability_report_version version ON version.id = audit.version_id
-                    JOIN capability_report_log report ON report.id = audit.report_id
-                    WHERE audit.status = 'pending'
-                      AND audit.audit_type IN ('initial', 'revision')
-                    ORDER BY audit.create_time ASC, audit.id ASC
-                    LIMIT 1
-                    """
-                )
-                row = cursor.fetchone()
+        try:
+            with self.database.connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT
+                          audit.id AS audit_id,
+                          audit.report_id,
+                          audit.version_id,
+                          audit.audit_type,
+                          version.file_path,
+                          version.file_name,
+                          report.systemId,
+                          report.title,
+                          report.report_month
+                        FROM capability_report_audit audit
+                        JOIN capability_report_version version ON version.id = audit.version_id
+                        JOIN capability_report_log report ON report.id = audit.report_id
+                        WHERE audit.status = 'pending'
+                          AND audit.audit_type IN ('initial', 'revision')
+                        ORDER BY audit.create_time ASC, audit.id ASC
+                        LIMIT 1
+                        FOR UPDATE
+                        """
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        return None
+                    cursor.execute(
+                        """
+                        UPDATE capability_report_audit
+                           SET status = 'running',
+                               started_at = CURRENT_TIMESTAMP(3),
+                               error_message = NULL
+                         WHERE id = %s AND status = 'pending'
+                        """,
+                        [row["audit_id"]],
+                    )
+                    if cursor.rowcount != 1:
+                        raise _AuditClaimLost()
+        except _AuditClaimLost:
+            return None
         if row is None:
             return None
         return {
@@ -707,7 +739,7 @@ class MySqlAuditRepository:
             "reportMonth": row["report_month"],
         }
 
-    def mark_audit_running(
+    def set_audit_execution_context(
         self, audit_id: int, prompt: dict[str, Any], model_config: dict[str, Any]
     ) -> None:
         with self.database.connection() as connection:
@@ -715,16 +747,15 @@ class MySqlAuditRepository:
                 cursor.execute(
                     """
                     UPDATE capability_report_audit
-                       SET status = 'running',
-                           prompt_id = %s,
+                       SET prompt_id = %s,
                            prompt_version = %s,
                            model_name = %s,
-                           started_at = CURRENT_TIMESTAMP(3),
-                           error_message = NULL
-                     WHERE id = %s
+                     WHERE id = %s AND status = 'running'
                     """,
                     [prompt["id"], prompt["version"], model_config["modelName"], audit_id],
                 )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("审核任务不在运行状态")
 
     def mark_audit_complete(self, audit_id: int, version_id: int, result: dict[str, Any]) -> None:
         conclusion = result["conclusion"]

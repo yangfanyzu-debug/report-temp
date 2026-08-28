@@ -722,7 +722,34 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(result["auditType"], "revision")
         self.assertIn("修订审核", queued_event[1][-1])
 
-    def test_retry_falls_back_to_version_type_only_for_legacy_null_type(self):
+    def test_retry_persists_legacy_null_type_on_active_audit(self):
+        from app.repositories.audits import MySqlAuditRepository
+
+        for status in ("pending", "running"):
+            with self.subTest(status=status):
+                cursor = RecordingCursor(
+                    version_type="uploaded",
+                    latest_audit={"id": 90, "status": status, "audit_type": None},
+                )
+
+                result = MySqlAuditRepository(RecordingDatabase(cursor)).retry_version_audit(1, 10)
+
+                type_update = next(
+                    item
+                    for item in cursor.executions
+                    if item[0].startswith("UPDATE capability_report_audit SET audit_type")
+                )
+                self.assertEqual(type_update[1], ["revision", 90])
+                self.assertFalse(
+                    any(
+                        item[0].startswith("INSERT INTO capability_report_audit ")
+                        for item in cursor.executions
+                    )
+                )
+                self.assertEqual(result["auditType"], "revision")
+                self.assertFalse(result["created"])
+
+    def test_retry_falls_back_to_version_type_for_completed_legacy_audit(self):
         from app.repositories.audits import MySqlAuditRepository
 
         cursor = RecordingCursor(
@@ -737,6 +764,24 @@ class ReportRoutesTest(unittest.TestCase):
         )
         self.assertEqual(audit_insert[1], [1, 10, "revision"])
         self.assertEqual(result["auditType"], "revision")
+
+    def test_retry_does_not_overwrite_valid_type_on_active_audit(self):
+        from app.repositories.audits import MySqlAuditRepository
+
+        cursor = RecordingCursor(
+            version_type="uploaded",
+            latest_audit={"id": 90, "status": "pending", "audit_type": "initial"},
+        )
+
+        result = MySqlAuditRepository(RecordingDatabase(cursor)).retry_version_audit(1, 10)
+
+        self.assertFalse(
+            any(
+                item[0].startswith("UPDATE capability_report_audit SET audit_type")
+                for item in cursor.executions
+            )
+        )
+        self.assertEqual(result["auditType"], "initial")
 
     def test_retry_version_audit_returns_404_for_missing_version(self):
         response = self.client.post("/api/report-management/audits/reports/1/versions/999/retry")
