@@ -764,7 +764,7 @@ class MySqlAuditRepository:
                     UPDATE capability_report_audit
                        SET prompt_id = %s,
                            prompt_version = %s,
-                           model_name = %s,
+                           model_name = %s
                      WHERE id = %s AND status = 'running'
                     """,
                     [prompt["id"], prompt["version"], model_config["modelName"], audit_id],

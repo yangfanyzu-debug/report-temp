@@ -19,6 +19,7 @@ class RecordingCursor:
         self.fail_on = fail_on
         self.last_sql = ""
         self.lastrowid = 88
+        self.rowcount = 1
 
     def __enter__(self):
         return self
@@ -182,6 +183,21 @@ class AuditRepositoryTest(unittest.TestCase):
         self.assertIn("WHERE audit_type = %s AND enabled = 1", statement)
         self.assertEqual(params, ["revision"])
         self.assertEqual(prompt["auditType"], "revision")
+
+    def test_set_audit_execution_context_builds_valid_update(self):
+        database = RecordingDatabase()
+        repository = MySqlAuditRepository(database)
+
+        repository.set_audit_execution_context(
+            14370,
+            {"id": 7, "version": 2},
+            {"modelName": "audit-model"},
+        )
+
+        statement, params = database.cursor.executions[0]
+        self.assertIn("model_name = %s WHERE id = %s", statement)
+        self.assertNotIn("model_name = %s, WHERE", statement)
+        self.assertEqual(params, [7, 2, "audit-model", 14370])
 
     def test_create_prompt_version_locks_before_calculating_and_updating_type(self):
         database = RecordingDatabase()
