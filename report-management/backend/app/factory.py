@@ -6,6 +6,7 @@ from .config import load_settings
 from .database import Database
 from .repositories.audits import MySqlAuditRepository
 from .repositories.reports import MySqlReportRepository
+from .routes.ai_config import ai_config
 from .routes.audit_prompts import audit_prompts
 from .routes.audit_checkpoints import audit_checkpoints
 from .routes.audits import audits
@@ -37,6 +38,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(reports)
     app.register_blueprint(versions)
     app.register_blueprint(audits)
+    app.register_blueprint(ai_config)
     app.register_blueprint(audit_prompts)
     app.register_blueprint(audit_checkpoints)
 

@@ -17,10 +17,19 @@ class AuditRepository(Protocol):
     def append_audit_event(self, audit_id: int, event_type: str, phase: str, content: str) -> int:
         ...
 
-    def get_active_prompt(self) -> dict[str, Any] | None:
+    def get_ai_config(self) -> dict[str, Any] | None:
         ...
 
-    def create_prompt_version(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_ai_config(self, payload: dict[str, str]) -> dict[str, Any]:
+        ...
+
+    def get_active_prompt(self, audit_type: str = "revision") -> dict[str, Any] | None:
+        ...
+
+    def get_prompt_by_id(self, prompt_id: int) -> dict[str, Any] | None:
+        ...
+
+    def create_prompt_version(self, audit_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         ...
 
     def list_checkpoints(self) -> list[dict[str, Any]]:
@@ -256,62 +265,123 @@ class MySqlAuditRepository:
                 )
                 return int(cursor.lastrowid)
 
-    def get_active_prompt(self) -> dict[str, Any] | None:
+    def get_ai_config(self) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, name, prompt_content, version, enabled, model_name, api_url, api_key, create_time, update_time
-                    FROM capability_report_audit_prompt
-                    WHERE enabled = 1
-                    ORDER BY version DESC, id DESC
+                    SELECT id, api_url, model_name, api_key, create_time, update_time
+                    FROM capability_report_ai_config
+                    ORDER BY id ASC
                     LIMIT 1
                     """
                 )
                 row = cursor.fetchone()
+        return self._to_ai_config(row) if row else None
+
+    def update_ai_config(self, payload: dict[str, str]) -> dict[str, Any]:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, api_key
+                    FROM capability_report_ai_config
+                    ORDER BY id ASC
+                    LIMIT 1
+                    FOR UPDATE
+                    """
+                )
+                current = cursor.fetchone()
+                api_key = payload.get("apiKey") or (current["api_key"] if current else "")
+                if current:
+                    cursor.execute(
+                        """
+                        UPDATE capability_report_ai_config
+                           SET api_url = %s, model_name = %s, api_key = %s
+                         WHERE id = %s
+                        """,
+                        [payload["apiUrl"], payload["modelName"], api_key, current["id"]],
+                    )
+                    config_id = int(current["id"])
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO capability_report_ai_config (`api_url`, `model_name`, `api_key`)
+                        VALUES (%s, %s, %s)
+                        """,
+                        [payload["apiUrl"], payload["modelName"], api_key],
+                    )
+                    config_id = int(cursor.lastrowid)
+                cursor.execute(
+                    """
+                    SELECT id, api_url, model_name, api_key, create_time, update_time
+                    FROM capability_report_ai_config
+                    WHERE id = %s
+                    """,
+                    [config_id],
+                )
+                row = cursor.fetchone()
+        return self._to_ai_config(row)
+
+    def get_active_prompt(self, audit_type: str = "revision") -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, name, audit_type, prompt_content, version, enabled, create_time, update_time
+                    FROM capability_report_audit_prompt
+                    WHERE audit_type = %s AND enabled = 1
+                    ORDER BY version DESC, id DESC
+                    LIMIT 1
+                    """,
+                    [audit_type],
+                )
+                row = cursor.fetchone()
         return self._to_prompt(row) if row else None
 
-    def create_prompt_version(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def get_prompt_by_id(self, prompt_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, name, audit_type, prompt_content, version, enabled, create_time, update_time
+                    FROM capability_report_audit_prompt
+                    WHERE id = %s
+                    """,
+                    [prompt_id],
+                )
+                row = cursor.fetchone()
+        return self._to_prompt(row) if row else None
+
+    def create_prompt_version(self, audit_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         name = payload["name"]
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT api_key
-                    FROM capability_report_audit_prompt
-                    WHERE name = %s AND enabled = 1
-                    ORDER BY version DESC, id DESC
-                    LIMIT 1
-                    """,
-                    [name],
-                )
-                active_prompt = cursor.fetchone()
-                api_key = payload.get("apiKey") or (active_prompt["api_key"] if active_prompt else "")
-                cursor.execute(
-                    """
                     SELECT COALESCE(MAX(version), 0) AS latest_version
                     FROM capability_report_audit_prompt
-                    WHERE name = %s
+                    WHERE audit_type = %s
                     """,
-                    [name],
+                    [audit_type],
                 )
                 version = int(cursor.fetchone()["latest_version"]) + 1
                 cursor.execute(
-                    "UPDATE capability_report_audit_prompt SET enabled = 0 WHERE name = %s",
-                    [name],
+                    "UPDATE capability_report_audit_prompt SET enabled = 0 WHERE audit_type = %s",
+                    [audit_type],
                 )
                 cursor.execute(
                     """
                     INSERT INTO capability_report_audit_prompt
-                      (`name`, `prompt_content`, `version`, `enabled`, `model_name`, `api_url`, `api_key`)
-                    VALUES (%s, %s, %s, 1, %s, %s, %s)
+                      (`name`, `audit_type`, `prompt_content`, `version`, `enabled`)
+                    VALUES (%s, %s, %s, %s, 1)
                     """,
-                    [name, payload["promptContent"], version, payload["modelName"], payload["apiUrl"], api_key],
+                    [name, audit_type, payload["promptContent"], version],
                 )
                 prompt_id = int(cursor.lastrowid)
                 cursor.execute(
                     """
-                    SELECT id, name, prompt_content, version, enabled, model_name, api_url, api_key, create_time, update_time
+                    SELECT id, name, audit_type, prompt_content, version, enabled, create_time, update_time
                     FROM capability_report_audit_prompt
                     WHERE id = %s
                     """,
@@ -688,11 +758,19 @@ class MySqlAuditRepository:
         return {
             "id": row["id"],
             "name": row["name"],
+            "auditType": row["audit_type"],
             "promptContent": row["prompt_content"],
             "version": row["version"],
             "enabled": bool(row["enabled"]),
-            "modelName": row["model_name"],
+            "createTime": _format_time(row["create_time"]),
+            "updateTime": _format_time(row["update_time"]),
+        }
+
+    def _to_ai_config(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
             "apiUrl": row["api_url"],
+            "modelName": row["model_name"],
             "apiKey": row["api_key"],
             "apiKeyMasked": _mask_secret(row["api_key"]),
             "apiKeyConfigured": bool(row["api_key"]),

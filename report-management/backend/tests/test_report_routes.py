@@ -55,19 +55,44 @@ class FakeReportRepository:
         }
         self.version_file = None
         self.created_prompt_payload = None
-        self.active_prompt = {
+        self.updated_ai_config_payload = None
+        self.ai_config = {
             "id": 1,
-            "name": "默认审核提示词",
-            "promptContent": "请审核报告",
-            "version": 2,
-            "enabled": True,
-            "modelName": "deepseek-chat",
             "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "modelName": "deepseek-chat",
             "apiKey": "ark-secret-abcd",
             "apiKeyMasked": "ark-****abcd",
             "apiKeyConfigured": True,
             "createTime": "2026-08-11 10:00:00",
             "updateTime": "2026-08-11 11:00:00",
+        }
+        self.active_prompts = {
+            "revision": {
+                "id": 1,
+                "name": "修订审核提示词",
+                "auditType": "revision",
+                "promptContent": "请审核报告",
+                "version": 2,
+                "enabled": True,
+                "apiKey": "ark-secret-abcd",
+                "apiKeyMasked": "ark-****abcd",
+                "apiKeyConfigured": True,
+                "createTime": "2026-08-11 10:00:00",
+                "updateTime": "2026-08-11 11:00:00",
+            },
+            "initial": {
+                "id": 2,
+                "name": "初始审核提示词",
+                "auditType": "initial",
+                "promptContent": "请审核初始报告",
+                "version": 1,
+                "enabled": True,
+                "apiKey": "ark-secret-abcd",
+                "apiKeyMasked": "ark-****abcd",
+                "apiKeyConfigured": True,
+                "createTime": "2026-08-11 10:00:00",
+                "updateTime": "2026-08-11 11:00:00",
+            },
         }
         self.audit_detail = {
             "id": 99,
@@ -216,19 +241,34 @@ class FakeReportRepository:
             return []
         return [event for event in self.audit_events if event["id"] > after_id]
 
-    def get_active_prompt(self):
-        return self.active_prompt
+    def get_ai_config(self):
+        return self.ai_config
 
-    def create_prompt_version(self, payload):
-        self.created_prompt_payload = payload
+    def update_ai_config(self, payload):
+        self.updated_ai_config_payload = payload
+        api_key = payload.get("apiKey") or self.ai_config["apiKey"]
+        self.ai_config = {
+            "id": 1,
+            "apiUrl": payload["apiUrl"],
+            "modelName": payload["modelName"],
+            "apiKey": api_key,
+            "apiKeyMasked": "ark-****abcd",
+            "apiKeyConfigured": bool(api_key),
+        }
+        return self.ai_config
+
+    def get_active_prompt(self, audit_type):
+        return self.active_prompts.get(audit_type)
+
+    def create_prompt_version(self, audit_type, payload):
+        self.created_prompt_payload = {"auditType": audit_type, **payload}
         return {
             "id": 2,
             "name": payload["name"],
+            "auditType": audit_type,
             "promptContent": payload["promptContent"],
             "version": 3,
             "enabled": True,
-            "modelName": payload["modelName"],
-            "apiUrl": payload["apiUrl"],
             "apiKey": payload.get("apiKey", ""),
             "apiKeyMasked": "ark-****wxyz",
             "apiKeyConfigured": True,
@@ -594,19 +634,60 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertFalse(updated.json["enabled"])
 
+    def test_shared_ai_config_masks_key(self):
+        response = self.client.get("/api/report-management/ai-config")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(
+            set(response.json),
+            {"id", "apiUrl", "modelName", "apiKeyMasked", "apiKeyConfigured"},
+        )
+        self.assertNotIn("apiKey", response.json)
+        self.assertTrue(response.json["apiKeyConfigured"])
+
+    def test_update_shared_ai_config_keeps_blank_key(self):
+        response = self.client.put(
+            "/api/report-management/ai-config",
+            json={
+                "apiUrl": "https://example.test/v1",
+                "modelName": "new-model",
+                "apiKey": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.repository.updated_ai_config_payload["apiKey"], "")
+        self.assertNotIn("apiKey", response.json)
+        self.assertTrue(response.json["apiKeyConfigured"])
+
+    def test_prompt_types_are_independent(self):
+        initial = self.client.get("/api/report-management/audit-prompts/initial/active")
+        revision = self.client.get("/api/report-management/audit-prompts/revision/active")
+
+        self.assertEqual(initial.status_code, 200)
+        self.assertEqual(revision.status_code, 200)
+        self.assertEqual(initial.json["auditType"], "initial")
+        self.assertEqual(revision.json["auditType"], "revision")
+
+    def test_unknown_prompt_type_is_rejected(self):
+        response = self.client.get("/api/report-management/audit-prompts/other/active")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_get_active_prompt(self):
         response = self.client.get("/api/report-management/audit-prompts/active")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.headers["Deprecation"], "true")
         self.assertEqual(response.json["version"], 2)
+        self.assertEqual(response.json["auditType"], "revision")
         self.assertTrue(response.json["enabled"])
-        self.assertEqual(response.json["apiUrl"], "https://ark.cn-beijing.volces.com/api/coding/v3")
-        self.assertTrue(response.json["apiKeyConfigured"])
         self.assertNotIn("apiKey", response.json)
 
     def test_get_active_prompt_returns_404_when_missing(self):
-        self.repository.active_prompt = None
+        self.repository.active_prompts["revision"] = None
 
         response = self.client.get("/api/report-management/audit-prompts/active")
 
@@ -618,27 +699,33 @@ class ReportRoutesTest(unittest.TestCase):
             "/api/report-management/audit-prompts",
             json={
                 "name": "默认审核提示词",
-                "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
-                "apiKey": "ark-new-key",
                 "promptContent": "新的审核提示词",
-                "modelName": "deepseek-reasoner",
             },
         )
 
         self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.headers["Deprecation"], "true")
         self.assertEqual(response.json["version"], 3)
-        self.assertEqual(response.json["modelName"], "deepseek-reasoner")
+        self.assertEqual(response.json["auditType"], "revision")
         self.assertNotIn("apiKey", response.json)
         self.assertEqual(
             self.repository.created_prompt_payload,
             {
+                "auditType": "revision",
                 "name": "默认审核提示词",
-                "apiUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
-                "apiKey": "ark-new-key",
                 "promptContent": "新的审核提示词",
-                "modelName": "deepseek-reasoner",
             },
         )
+
+    def test_create_initial_prompt_version(self):
+        response = self.client.post(
+            "/api/report-management/audit-prompts/initial",
+            json={"name": "初始审核提示词", "promptContent": "新的初始提示词"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["auditType"], "initial")
+        self.assertEqual(self.repository.created_prompt_payload["auditType"], "initial")
 
     def test_create_prompt_version_requires_content(self):
         response = self.client.post("/api/report-management/audit-prompts", json={"promptContent": " "})
