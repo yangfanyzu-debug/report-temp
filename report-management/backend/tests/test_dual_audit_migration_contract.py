@@ -74,6 +74,12 @@ class DualAuditMigrationContractTest(unittest.TestCase):
     def test_seed_existence_is_scoped_by_name_version_and_audit_type(self):
         sql = MIGRATION.read_text(encoding="utf-8")
 
+        seed_versions = re.findall(
+            r"'(?:初始|修订)审核提示词',.*?\n  (\d+),\n  1,\n  '(?:initial|revision)'",
+            sql,
+            re.DOTALL,
+        )
+        self.assertEqual(["1", "1"], seed_versions)
         self.assertIn(
             """AND NOT EXISTS (
     SELECT 1 FROM capability_report_audit_prompt
