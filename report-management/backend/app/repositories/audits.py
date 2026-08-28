@@ -357,6 +357,7 @@ class MySqlAuditRepository:
         name = payload["name"]
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
+                self._lock_prompt_versions(cursor, audit_type)
                 cursor.execute(
                     """
                     SELECT COALESCE(MAX(version), 0) AS latest_version
@@ -777,6 +778,30 @@ class MySqlAuditRepository:
             "createTime": _format_time(row["create_time"]),
             "updateTime": _format_time(row["update_time"]),
         }
+
+    def _lock_prompt_versions(self, cursor: Any, audit_type: str) -> None:
+        # The config singleton serializes creation when this audit type has no prompt rows yet.
+        cursor.execute(
+            """
+            SELECT id
+            FROM capability_report_ai_config
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+            """
+        )
+        if cursor.fetchone() is None:
+            raise RuntimeError("未配置共用模型连接，无法创建提示词版本")
+        cursor.execute(
+            """
+            SELECT id
+            FROM capability_report_audit_prompt
+            WHERE audit_type = %s
+            FOR UPDATE
+            """,
+            [audit_type],
+        )
+        cursor.fetchall()
 
     def _select_checkpoint(self, cursor: Any, checkpoint_id: int) -> dict[str, Any] | None:
         cursor.execute(

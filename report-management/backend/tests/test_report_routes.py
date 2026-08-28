@@ -652,7 +652,7 @@ class ReportRoutesTest(unittest.TestCase):
             json={
                 "apiUrl": "https://example.test/v1",
                 "modelName": "new-model",
-                "apiKey": "",
+                "apiKey": None,
             },
         )
 
@@ -660,6 +660,20 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(self.repository.updated_ai_config_payload["apiKey"], "")
         self.assertNotIn("apiKey", response.json)
         self.assertTrue(response.json["apiKeyConfigured"])
+
+    def test_ai_config_rejects_non_object_json_and_invalid_field_types(self):
+        for payload in (
+            [],
+            1,
+            {"apiUrl": 1, "modelName": "model", "apiKey": "key"},
+            {"apiUrl": "https://example.test", "modelName": [], "apiKey": "key"},
+            {"apiUrl": "https://example.test", "modelName": "model", "apiKey": []},
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.put("/api/report-management/ai-config", json=payload)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("message", response.json)
 
     def test_prompt_types_are_independent(self):
         initial = self.client.get("/api/report-management/audit-prompts/initial/active")
@@ -676,11 +690,16 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_get_active_prompt(self):
+        self.repository.active_prompts["revision"]["futureSecret"] = "must-not-leak"
         response = self.client.get("/api/report-management/audit-prompts/active")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["Deprecation"], "true")
+        self.assertEqual(
+            set(response.json),
+            {"id", "name", "auditType", "promptContent", "version", "enabled", "createTime", "updateTime"},
+        )
         self.assertEqual(response.json["version"], 2)
         self.assertEqual(response.json["auditType"], "revision")
         self.assertTrue(response.json["enabled"])
@@ -731,7 +750,24 @@ class ReportRoutesTest(unittest.TestCase):
         response = self.client.post("/api/report-management/audit-prompts", json={"promptContent": " "})
 
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.headers["Deprecation"], "true")
         self.assertEqual(response.json, {"message": "提示词内容不能为空"})
+
+    def test_prompt_posts_reject_non_object_json_and_invalid_field_types(self):
+        for url, payload, deprecated in (
+            ("/api/report-management/audit-prompts/initial", [], False),
+            ("/api/report-management/audit-prompts/initial", 1, False),
+            ("/api/report-management/audit-prompts/initial", {"promptContent": 1}, False),
+            ("/api/report-management/audit-prompts/initial", {"name": 1, "promptContent": "内容"}, False),
+            ("/api/report-management/audit-prompts", [], True),
+        ):
+            with self.subTest(url=url, payload=payload):
+                response = self.client.post(url, json=payload)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("message", response.json)
+                if deprecated:
+                    self.assertEqual(response.headers["Deprecation"], "true")
 
 
 if __name__ == "__main__":
