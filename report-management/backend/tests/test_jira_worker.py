@@ -88,11 +88,20 @@ class JiraWorkerTest(unittest.TestCase):
         self.assertEqual(repository.errors, [(1, "JIRA不可用")])
 
     @patch("app.services.jira_client.urllib.request.urlopen")
-    def test_client_uses_idempotency_key_and_extracts_nested_issue_key(self, urlopen):
-        response = io.BytesIO(json.dumps({"data": {"issueKey": "CAP-101"}}).encode())
+    def test_client_uses_internal_api_contract(self, urlopen):
+        response = io.BytesIO(
+            json.dumps(
+                {
+                    "retCode": 200,
+                    "retData": {"id": "2377340", "key": "LMP-1582"},
+                    "retDesc": "success",
+                }
+            ).encode()
+        )
         urlopen.return_value = response
         settings = SimpleNamespace(
-            jira_create_url="http://jira-api/issues",
+            jira_create_url="http://10.2.64.36:9212/osenv/cap/confirm/jira",
+            jira_issue_title="性能容量报告复核任务",
             jira_api_token="",
             jira_timeout_seconds=30,
         )
@@ -100,8 +109,28 @@ class JiraWorkerTest(unittest.TestCase):
         jira_id = JiraClient(settings).create_issue(self.job)
 
         request = urlopen.call_args.args[0]
-        self.assertEqual(jira_id, "CAP-101")
+        self.assertEqual(jira_id, "LMP-1582")
         self.assertEqual(request.headers["Idempotency-key"], "capability-report-1")
+        self.assertEqual(
+            json.loads(request.data.decode("utf-8")),
+            {"systemId": "credit-card-center", "title": "性能容量报告复核任务"},
+        )
+
+    @patch("app.services.jira_client.urllib.request.urlopen")
+    def test_client_rejects_failed_business_response(self, urlopen):
+        response = io.BytesIO(
+            json.dumps({"retCode": 500, "retDesc": "创建失败"}).encode()
+        )
+        urlopen.return_value = response
+        settings = SimpleNamespace(
+            jira_create_url="http://jira-api/issues",
+            jira_issue_title="性能容量报告复核任务",
+            jira_api_token="",
+            jira_timeout_seconds=30,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "创建失败"):
+            JiraClient(settings).create_issue(self.job)
 
 
 if __name__ == "__main__":

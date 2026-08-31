@@ -24,18 +24,12 @@ class JiraClient:
         if not self.configured:
             raise JiraNotConfigured("未配置JIRA创建接口")
         payload = {
-            "externalId": f"capability-report-{job['reportId']}",
-            "reportId": job["reportId"],
-            "versionId": job["versionId"],
-            "auditId": job["auditId"],
             "systemId": job["systemId"],
-            "title": job["title"],
-            "reportMonth": job["reportMonth"],
-            "auditResult": job.get("auditResult") or "",
+            "title": self.settings.jira_issue_title or "性能容量报告复核任务",
         }
         headers = {
             "Content-Type": "application/json",
-            "Idempotency-Key": payload["externalId"],
+            "Idempotency-Key": f"capability-report-{job['reportId']}",
         }
         if self.settings.jira_api_token:
             headers["Authorization"] = f"Bearer {self.settings.jira_api_token}"
@@ -56,6 +50,11 @@ class JiraClient:
         except (urllib.error.URLError, TimeoutError) as error:
             raise RuntimeError(f"JIRA创建接口调用失败：{error}") from error
 
+        ret_code = result.get("retCode") if isinstance(result, dict) else None
+        if ret_code is not None and str(ret_code) != "200":
+            description = str(result.get("retDesc") or "未知错误").strip()
+            raise RuntimeError(f"JIRA创建接口返回失败：{description}（retCode={ret_code}）")
+
         jira_id = _extract_jira_id(result)
         if not jira_id:
             raise RuntimeError("JIRA创建接口响应中缺少jiraId、issueKey或key")
@@ -69,4 +68,6 @@ def _extract_jira_id(payload: Any) -> str:
         value = payload.get(key)
         if value is not None and str(value).strip():
             return str(value).strip()
-    return _extract_jira_id(payload.get("data"))
+    return _extract_jira_id(payload.get("retData")) or _extract_jira_id(
+        payload.get("data")
+    )
