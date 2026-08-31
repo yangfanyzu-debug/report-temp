@@ -92,6 +92,9 @@ class AuditRepository(Protocol):
     def mark_audit_error(self, audit_id: int, version_id: int, message: str) -> None:
         ...
 
+    def queue_jira_creation(self, report_id: int, version_id: int, audit_id: int) -> bool:
+        ...
+
 
 def _json_value(value: Any) -> Any:
     if value is None or isinstance(value, (dict, list)):
@@ -798,6 +801,37 @@ class MySqlAuditRepository:
                     "UPDATE capability_report_version SET audit_status = %s WHERE id = %s",
                     [status, version_id],
                 )
+
+    def queue_jira_creation(self, report_id: int, version_id: int, audit_id: int) -> bool:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE capability_report_log report
+                       SET jira_status = 'pending',
+                           jira_error = NULL,
+                           jira_attempts = 0,
+                           jira_version_id = %s,
+                           jira_audit_id = %s
+                     WHERE report.id = %s
+                       AND COALESCE(report.jira_id, '') = ''
+                       AND report.jira_status NOT IN ('pending', 'creating', 'created')
+                       AND EXISTS (
+                           SELECT 1
+                             FROM capability_report_version version
+                            WHERE version.id = %s
+                              AND version.report_id = report.id
+                              AND version.source = 'batch'
+                              AND version.version_no = (
+                                  SELECT MAX(latest.version_no)
+                                    FROM capability_report_version latest
+                                   WHERE latest.report_id = report.id
+                              )
+                       )
+                    """,
+                    [version_id, audit_id, report_id, version_id],
+                )
+                return cursor.rowcount == 1
 
     def mark_audit_error(self, audit_id: int, version_id: int, message: str) -> None:
         with self.database.connection() as connection:

@@ -95,6 +95,10 @@ class AuditWorker:
                 )
             self.repository.append_audit_event(job["auditId"], "system", "saving", "模型输出完成，正在保存审核结果")
             self.repository.mark_audit_complete(job["auditId"], job["versionId"], result)
+            if audit_type == "initial" and result["conclusion"] == "passed":
+                self.repository.queue_jira_creation(
+                    job["reportId"], job["versionId"], job["auditId"]
+                )
             conclusion = {"passed": "通过", "failed": "不通过", "completed": "已完成"}.get(result["conclusion"], "已完成")
             self.repository.append_audit_event(job["auditId"], "result", "completed", f"AI审核完成：{conclusion}")
             return {"processed": True, "auditId": job["auditId"], "status": "completed"}

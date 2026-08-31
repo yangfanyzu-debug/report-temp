@@ -52,6 +52,19 @@ class RecordingCursor:
             self.lastrowid = 88 if self.lastrowid == 9 else 101
 
     def fetchone(self):
+        if "SELECT id, finalized_at, jira_id, jira_status" in self.last_sql:
+            return {
+                "id": 1,
+                "finalized_at": None,
+                "jira_id": "",
+                "jira_status": "not_created",
+            }
+        if "version.generation_id" in self.last_sql:
+            return None
+        if "SELECT id, version_no, source, audit_status" in self.last_sql:
+            return None
+        if "SELECT finalized_at FROM capability_report_log" in self.last_sql:
+            return {"finalized_at": None}
         if "FROM capability_report_version version" in self.last_sql:
             return {"id": 10, "version_type": self.version_type}
         if "FROM capability_report_audit" in self.last_sql:
@@ -90,6 +103,12 @@ class FakeReportRepository:
             "title": "中信银行信用卡中心授权交易资源分析报告",
             "reportMonth": "2025年08月",
             "jiraId": "JIRA-10086",
+            "jiraStatus": "created",
+            "jiraError": None,
+            "isFinalized": False,
+            "finalVersionId": None,
+            "finalizedAt": None,
+            "finalizedBy": "",
             "versions": [
                 {
                     "id": 10,
@@ -236,6 +255,17 @@ class FakeReportRepository:
             "auditStatus": "pending",
             "created": True,
         }
+        self.finalize_result = {
+            "reportId": 1,
+            "finalVersionId": 10,
+            "finalVersionNo": 2,
+            "finalizedAt": "2026-08-31 10:00:00",
+            "finalizedBy": "张三",
+            "created": True,
+        }
+        self.finalized_report_ids = []
+        self.upload_context_finalized = False
+        self.register_created = True
 
     def list_reports(self, filters, page_num, page_size):
         self.last_filters = filters
@@ -248,6 +278,8 @@ class FakeReportRepository:
                     "title": "中信银行信用卡中心授权交易资源分析报告",
                     "reportMonth": "2025年08月",
                     "jiraId": "JIRA-10086",
+                    "jiraStatus": "created",
+                    "isFinalized": False,
                     "latestVersionId": 10,
                     "latestVersionNo": 2,
                     "latestVersionType": "uploaded",
@@ -272,6 +304,8 @@ class FakeReportRepository:
             "auditId": 88,
             "auditType": "initial",
             "auditStatus": "pending",
+            "versionNo": 1,
+            "created": self.register_created,
         }
 
     def prepare_uploaded_version(self, report_id):
@@ -283,6 +317,7 @@ class FakeReportRepository:
             "title": "中信银行信用卡中心授权交易资源分析报告",
             "reportMonth": "2025年08月",
             "nextVersionNo": 3,
+            "isFinalized": self.upload_context_finalized,
         }
 
     def create_uploaded_version(self, payload):
@@ -300,6 +335,12 @@ class FakeReportRepository:
         if version_id != 10:
             return None
         return self.version_file
+
+    def finalize_report(self, report_id, operator):
+        if report_id != 1:
+            return None
+        self.finalized_report_ids.append((report_id, operator))
+        return {**self.finalize_result, "finalizedBy": operator}
 
     def get_audit_detail(self, audit_id):
         return self.audit_detail if audit_id == 99 else None
@@ -462,20 +503,37 @@ class ReportRoutesTest(unittest.TestCase):
                 "title": "中信银行信用卡中心授权交易资源分析报告",
                 "reportMonth": "2025年08月",
                 "filePath": "/appdata/report.docx",
-                "jiraId": "JIRA-10086",
+                "generationId": "batch-202508-credit-001",
             },
         )
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json["auditType"], "initial")
         self.assertEqual(self.repository.registered_payload["source"], "batch")
-        self.assertEqual(self.repository.registered_payload["jiraId"], "JIRA-10086")
+        self.assertEqual(
+            self.repository.registered_payload["generationId"],
+            "batch-202508-credit-001",
+        )
 
     def test_register_initial_report_requires_fields(self):
         response = self.client.post("/api/report-management/reports/register", json={"systemId": "x"})
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("缺少必要参数", response.json["message"])
+
+    def test_register_initial_report_requires_generation_id(self):
+        response = self.client.post(
+            "/api/report-management/reports/register",
+            json={
+                "systemId": "credit-card-center",
+                "title": "报告",
+                "reportMonth": "2025年08月",
+                "filePath": "/appdata/report.docx",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("generationId", response.json["message"])
 
     def test_upload_and_register_initial_report(self):
         response = self.client.post(
@@ -485,7 +543,7 @@ class ReportRoutesTest(unittest.TestCase):
                 "systemId": "credit-card-center",
                 "title": "中信银行信用卡中心授权交易资源分析报告",
                 "reportMonth": "2025年08月",
-                "jiraId": "容量审核-测试-001",
+                "generationId": "batch-upload-001",
             },
             content_type="multipart/form-data",
         )
@@ -495,7 +553,7 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.json["auditType"], "initial")
         payload = self.repository.registered_payload
         self.assertEqual(payload["source"], "batch")
-        self.assertEqual(payload["jiraId"], "容量审核-测试-001")
+        self.assertEqual(payload["generationId"], "batch-upload-001")
         self.assertEqual(payload["fileName"], "性能容量报告.docx")
         self.assertGreater(payload["fileSize"], 0)
         saved_path = Path(payload["filePath"])
@@ -506,7 +564,7 @@ class ReportRoutesTest(unittest.TestCase):
 
     def test_upload_and_register_initial_report_uses_unique_server_names(self):
         paths = []
-        for _ in range(2):
+        for index in range(2):
             response = self.client.post(
                 "/api/report-management/reports/register-upload",
                 data={
@@ -514,6 +572,7 @@ class ReportRoutesTest(unittest.TestCase):
                     "systemId": "credit-card-center",
                     "title": "同名报告",
                     "reportMonth": "2025年08月",
+                    "generationId": f"same-name-{index}",
                 },
                 content_type="multipart/form-data",
             )
@@ -522,6 +581,25 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertNotEqual(paths[0], paths[1])
         self.assertTrue(all(path.is_file() for path in paths))
+
+    def test_upload_and_register_initial_report_removes_idempotent_replay_file(self):
+        self.repository.register_created = False
+
+        response = self.client.post(
+            "/api/report-management/reports/register-upload",
+            data={
+                "file": (make_docx(), "重复报告.docx"),
+                "systemId": "credit-card-center",
+                "title": "重复报告",
+                "reportMonth": "2025年08月",
+                "generationId": "same-generation-001",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json["created"])
+        self.assertEqual(list(self.initial_report_dir.iterdir()), [])
 
     def test_upload_and_register_initial_report_rejects_missing_fields_before_saving(self):
         response = self.client.post(
@@ -542,6 +620,7 @@ class ReportRoutesTest(unittest.TestCase):
                 "systemId": "credit-card-center",
                 "title": "测试报告",
                 "reportMonth": "2025年08月",
+                "generationId": "invalid-docx-001",
             },
             content_type="multipart/form-data",
         )
@@ -576,6 +655,32 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json, {"message": "未找到该报告"})
+
+    def test_upload_report_version_rejects_finalized_report(self):
+        self.repository.upload_context_finalized = True
+
+        response = self.client.post(
+            "/api/report-management/reports/1/versions",
+            data={"file": (make_docx(), "报告.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json["code"], "REPORT_FINALIZED")
+
+    def test_finalize_report(self):
+        response = self.client.post(
+            "/api/report-management/reports/1/finalize", json={"operator": "张三"}
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["finalVersionId"], 10)
+        self.assertEqual(self.repository.finalized_report_ids, [(1, "张三")])
+
+    def test_finalize_report_returns_404(self):
+        response = self.client.post("/api/report-management/reports/999/finalize")
+
+        self.assertEqual(response.status_code, 404)
 
     def test_upload_report_version_rejects_invalid_docx(self):
         response = self.client.post(
@@ -667,6 +772,7 @@ class ReportRoutesTest(unittest.TestCase):
                 "filePath": "/tmp/initial.docx",
                 "fileName": "initial.docx",
                 "fileSize": 100,
+                "generationId": "initial-001",
             }
         )
         uploaded_cursor = RecordingCursor()

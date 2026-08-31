@@ -27,6 +27,24 @@ class ReportRepository(Protocol):
     def get_version_file(self, version_id: int) -> dict[str, Any] | None:
         ...
 
+    def finalize_report(self, report_id: int, operator: str) -> dict[str, Any] | None:
+        ...
+
+
+class ReportWorkflowConflict(RuntimeError):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+class ReportFinalizedError(ReportWorkflowConflict):
+    def __init__(self):
+        super().__init__("报告已定稿，不能继续新增版本", "REPORT_FINALIZED")
+
+
+class ReportNotReadyError(ReportWorkflowConflict):
+    pass
+
 
 def _json_value(value: Any) -> Any:
     if value is None or isinstance(value, (dict, list)):
@@ -125,6 +143,11 @@ class MySqlReportRepository:
                       report.title,
                       report.report_month,
                       report.jira_id,
+                      report.jira_status,
+                      report.jira_error,
+                      report.final_version_id,
+                      report.finalized_at,
+                      report.finalized_by,
                       report.create_time,
                       latest_version.id AS latest_version_id,
                       latest_version.version_no AS latest_version_no,
@@ -155,7 +178,9 @@ class MySqlReportRepository:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, systemId, title, report_month, jira_id, report_data, meta_data, create_time
+                    SELECT id, systemId, title, report_month, jira_id, jira_status, jira_error,
+                           final_version_id, finalized_at, finalized_by,
+                           report_data, meta_data, create_time
                       FROM capability_report_log
                      WHERE id = %s
                     """,
@@ -203,6 +228,12 @@ class MySqlReportRepository:
             "title": report["title"],
             "reportMonth": report["report_month"],
             "jiraId": report["jira_id"],
+            "jiraStatus": report["jira_status"],
+            "jiraError": report["jira_error"],
+            "isFinalized": report["finalized_at"] is not None,
+            "finalVersionId": report["final_version_id"],
+            "finalizedAt": _format_time(report["finalized_at"]),
+            "finalizedBy": report["finalized_by"],
             "reportData": _json_value(report["report_data"]),
             "metaData": _json_value(report["meta_data"]),
             "createTime": _format_time(report["create_time"]),
@@ -221,55 +252,117 @@ class MySqlReportRepository:
                 cursor.execute(
                     """
                     INSERT INTO capability_report_log
-                      (`systemId`, `title`, `report_month`, `report_data`, `meta_data`, `jira_id`)
-                    VALUES (%s, %s, %s, %s, NULL, %s)
+                      (`systemId`, `title`, `report_month`, `report_data`, `meta_data`)
+                    VALUES (%s, %s, %s, %s, NULL)
                     ON DUPLICATE KEY UPDATE
-                      `report_data` = VALUES(`report_data`),
-                      `jira_id` = VALUES(`jira_id`),
                       `id` = LAST_INSERT_ID(`id`)
                     """,
-                    [payload["systemId"], payload["title"], payload["reportMonth"], report_data, payload.get("jiraId", "")],
+                    [payload["systemId"], payload["title"], payload["reportMonth"], report_data],
                 )
                 report_id = int(cursor.lastrowid)
                 cursor.execute(
                     """
-                    SELECT id FROM capability_report_version
-                     WHERE report_id = %s AND version_no = 1
+                    SELECT id, finalized_at, jira_id, jira_status
+                      FROM capability_report_log
+                     WHERE id = %s
+                     FOR UPDATE
                     """,
                     [report_id],
                 )
-                existing_version = cursor.fetchone()
-                if existing_version:
-                    version_id = int(existing_version["id"])
-                    cursor.execute(
-                        """
-                        UPDATE capability_report_version
-                           SET file_name = %s,
-                               file_path = %s,
-                               file_size = %s,
-                               audit_status = 'pending',
-                               source = %s
-                         WHERE id = %s
-                        """,
-                        [file_name, file_path, file_size, payload.get("source", "batch"), version_id],
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        INSERT INTO capability_report_version
-                          (`report_id`, `version_no`, `version_type`, `file_name`, `file_path`, `file_size`, `audit_status`, `uploader`, `source`)
-                        VALUES (%s, 1, 'initial', %s, %s, %s, 'pending', '批次任务', %s)
-                        """,
-                        [report_id, file_name, file_path, file_size, payload.get("source", "batch")],
-                    )
-                    version_id = int(cursor.lastrowid)
+                report = cursor.fetchone()
+                cursor.execute(
+                    """
+                    SELECT version.id, version.version_no,
+                           audit.id AS audit_id, audit.status AS audit_status
+                      FROM capability_report_version version
+                      LEFT JOIN capability_report_audit audit
+                        ON audit.version_id = version.id
+                       AND audit.create_time = (
+                           SELECT MAX(inner_audit.create_time)
+                             FROM capability_report_audit inner_audit
+                            WHERE inner_audit.version_id = version.id
+                       )
+                     WHERE version.report_id = %s
+                       AND version.generation_id = %s
+                     LIMIT 1
+                    """,
+                    [report_id, payload["generationId"]],
+                )
+                existing_generation = cursor.fetchone()
+                if existing_generation:
+                    return {
+                        "reportId": report_id,
+                        "versionId": int(existing_generation["id"]),
+                        "versionNo": int(existing_generation["version_no"]),
+                        "auditId": existing_generation["audit_id"],
+                        "auditType": "initial",
+                        "auditStatus": existing_generation["audit_status"] or "pending",
+                        "created": False,
+                    }
+
+                if report["finalized_at"] is not None:
+                    raise ReportFinalizedError()
+
+                cursor.execute(
+                    """
+                    SELECT id, version_no, source, audit_status
+                      FROM capability_report_version
+                     WHERE report_id = %s
+                     ORDER BY version_no DESC
+                     LIMIT 1
+                    """,
+                    [report_id],
+                )
+                latest_version = cursor.fetchone()
+                if latest_version:
+                    if latest_version["source"] != "batch":
+                        raise ReportNotReadyError(
+                            "报告已进入人工修订阶段，批次不能继续登记", "BATCH_STAGE_CLOSED"
+                        )
+                    if latest_version["audit_status"] != "failed":
+                        raise ReportNotReadyError(
+                            "只有最新批次版本初审不通过后才能重新登记",
+                            "BATCH_REGENERATION_NOT_ALLOWED",
+                        )
+                    if report["jira_id"] or report["jira_status"] in {
+                        "pending",
+                        "creating",
+                        "created",
+                    }:
+                        raise ReportNotReadyError(
+                            "报告已进入JIRA创建或人工处理阶段", "BATCH_STAGE_CLOSED"
+                        )
+                version_no = int(latest_version["version_no"]) + 1 if latest_version else 1
+                cursor.execute(
+                    """
+                    INSERT INTO capability_report_version
+                      (`report_id`, `version_no`, `version_type`, `file_name`, `file_path`,
+                       `file_size`, `audit_status`, `uploader`, `source`, `generation_id`)
+                    VALUES (%s, %s, 'initial', %s, %s, %s, 'pending', '批次任务', 'batch', %s)
+                    """,
+                    [
+                        report_id,
+                        version_no,
+                        file_name,
+                        file_path,
+                        file_size,
+                        payload["generationId"],
+                    ],
+                )
+                version_id = int(cursor.lastrowid)
+                cursor.execute(
+                    "UPDATE capability_report_log SET report_data = %s WHERE id = %s",
+                    [report_data, report_id],
+                )
                 audit_id = self._create_pending_audit(cursor, report_id, version_id, "initial")
         return {
             "reportId": report_id,
             "versionId": version_id,
+            "versionNo": version_no,
             "auditId": audit_id,
             "auditType": "initial",
             "auditStatus": "pending",
+            "created": True,
         }
 
     def prepare_uploaded_version(self, report_id: int) -> dict[str, Any] | None:
@@ -277,11 +370,14 @@ class MySqlReportRepository:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT report.id, report.systemId, report.title, report.report_month, COALESCE(MAX(version.version_no), 0) AS latest_version_no
+                    SELECT report.id, report.systemId, report.title, report.report_month,
+                           report.finalized_at,
+                           COALESCE(MAX(version.version_no), 0) AS latest_version_no
                       FROM capability_report_log report
                       LEFT JOIN capability_report_version version ON version.report_id = report.id
                      WHERE report.id = %s
-                     GROUP BY report.id, report.systemId, report.title, report.report_month
+                     GROUP BY report.id, report.systemId, report.title, report.report_month,
+                              report.finalized_at
                     """,
                     [report_id],
                 )
@@ -294,11 +390,21 @@ class MySqlReportRepository:
             "title": row["title"],
             "reportMonth": row["report_month"],
             "nextVersionNo": int(row["latest_version_no"]) + 1,
+            "isFinalized": row["finalized_at"] is not None,
         }
 
     def create_uploaded_version(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT finalized_at FROM capability_report_log WHERE id = %s FOR UPDATE",
+                    [payload["reportId"]],
+                )
+                report = cursor.fetchone()
+                if report is None:
+                    raise ReportNotReadyError("未找到该报告", "REPORT_NOT_FOUND")
+                if report["finalized_at"] is not None:
+                    raise ReportFinalizedError()
                 cursor.execute(
                     """
                     INSERT INTO capability_report_version
@@ -325,6 +431,68 @@ class MySqlReportRepository:
             "auditId": audit_id,
             "auditType": "revision",
             "auditStatus": "pending",
+        }
+
+    def finalize_report(self, report_id: int, operator: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, final_version_id, finalized_at, finalized_by
+                      FROM capability_report_log
+                     WHERE id = %s
+                     FOR UPDATE
+                    """,
+                    [report_id],
+                )
+                report = cursor.fetchone()
+                if report is None:
+                    return None
+                if report["finalized_at"] is not None:
+                    return {
+                        "reportId": report_id,
+                        "finalVersionId": report["final_version_id"],
+                        "finalizedAt": _format_time(report["finalized_at"]),
+                        "finalizedBy": report["finalized_by"],
+                        "created": False,
+                    }
+                cursor.execute(
+                    """
+                    SELECT id, version_no, audit_status
+                      FROM capability_report_version
+                     WHERE report_id = %s
+                     ORDER BY version_no DESC
+                     LIMIT 1
+                    """,
+                    [report_id],
+                )
+                latest_version = cursor.fetchone()
+                if latest_version is None or latest_version["audit_status"] != "passed":
+                    raise ReportNotReadyError(
+                        "只有最新版本AI审核通过后才能确认定稿", "REPORT_NOT_READY"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE capability_report_log
+                       SET final_version_id = %s,
+                           finalized_at = CURRENT_TIMESTAMP(3),
+                           finalized_by = %s
+                     WHERE id = %s AND finalized_at IS NULL
+                    """,
+                    [latest_version["id"], operator, report_id],
+                )
+                cursor.execute(
+                    "SELECT finalized_at FROM capability_report_log WHERE id = %s",
+                    [report_id],
+                )
+                finalized = cursor.fetchone()
+        return {
+            "reportId": report_id,
+            "finalVersionId": latest_version["id"],
+            "finalVersionNo": latest_version["version_no"],
+            "finalizedAt": _format_time(finalized["finalized_at"]),
+            "finalizedBy": operator,
+            "created": True,
         }
 
     def get_version_file(self, version_id: int) -> dict[str, Any] | None:
@@ -395,6 +563,14 @@ class MySqlReportRepository:
             "title": row["title"],
             "reportMonth": row["report_month"],
             "jiraId": row["jira_id"],
+            "jiraStatus": row.get("jira_status") or (
+                "created" if row["jira_id"] else "not_created"
+            ),
+            "jiraError": row.get("jira_error"),
+            "isFinalized": row.get("finalized_at") is not None,
+            "finalVersionId": row.get("final_version_id"),
+            "finalizedAt": _format_time(row.get("finalized_at")),
+            "finalizedBy": row.get("finalized_by"),
             "latestVersionId": row["latest_version_id"],
             "latestVersionNo": row["latest_version_no"],
             "latestVersionType": row["latest_version_type"],

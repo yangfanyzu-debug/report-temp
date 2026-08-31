@@ -124,7 +124,7 @@ GET /api/report-management/reports/{reportId}
 
 ## 注册初始报告并发起审核
 
-给跑批任务调用。接口必须幂等：同一个 `systemId + title + reportMonth` 的初始版本已存在时，不重复创建版本，可按需重新发起审核。
+给跑批任务调用。`generationId` 是一次报告生成结果的幂等标识：相同标识重复调用只返回原版本；初审不通过后，批次使用新的标识重新登记并生成下一版本。
 
 ```text
 POST /api/report-management/reports/register
@@ -137,6 +137,7 @@ POST /api/report-management/reports/register
   "systemId": "credit-card-center",
   "title": "中信银行信用卡中心授权交易资源分析报告",
   "reportMonth": "2025年08月",
+  "generationId": "batch-202508-credit-card-center-001",
   "filePath": "/appdata/aiops_inspect/B-plan/data/docfile_output/中信银行信用卡中心授权交易资源分析报告(2025年08月).docx",
   "source": "batch"
 }
@@ -150,7 +151,8 @@ POST /api/report-management/reports/register
   "versionId": 9,
   "auditId": 88,
   "auditType": "initial",
-  "auditStatus": "pending"
+  "auditStatus": "pending",
+  "created": true
 }
 ```
 
@@ -158,7 +160,7 @@ POST /api/report-management/reports/register
 
 供跑批任务与报告中心不在同一台服务器时调用。每份报告单独请求；接口将 DOCX 保存到报告中心的初始报告目录，再登记初始版本并创建异步审核任务。
 
-同一个 `systemId + title + reportMonth` 已存在时，不新增报告或初始版本，但会将初始版本更新为本次上传的文件并重新创建审核任务。服务端使用唯一存储文件名，不会覆盖之前上传的同名文件。
+相同 `generationId` 重复调用时不新增版本；初审不通过后使用新的 `generationId` 会创建不可覆盖的下一版本。服务端使用唯一存储文件名，不会覆盖之前上传的同名文件。
 
 ```text
 POST /api/report-management/reports/register-upload
@@ -173,7 +175,7 @@ Content-Type: multipart/form-data
 | `systemId` | string | 是 | 系统编码 |
 | `title` | string | 是 | 中文报告标题 |
 | `reportMonth` | string | 是 | 报表月份，格式 `YYYY年MM月` |
-| `jiraId` | string | 否 | JIRA 任务号 |
+| `generationId` | string | 是 | 本次生成结果的全局幂等标识 |
 | `source` | string | 否 | 默认 `batch` |
 
 调用示例：
@@ -184,7 +186,7 @@ curl -X POST http://localhost:5010/api/report-management/reports/register-upload
   -F 'systemId=credit-card-center' \
   -F 'title=中信银行信用卡中心授权交易资源分析报告' \
   -F 'reportMonth=2025年08月' \
-  -F 'jiraId=容量审核-202508-001'
+  -F 'generationId=batch-202508-credit-card-center-001'
 ```
 
 响应与 `POST /reports/register` 一致：
@@ -195,9 +197,12 @@ curl -X POST http://localhost:5010/api/report-management/reports/register-upload
   "versionId": 9,
   "auditId": 88,
   "auditType": "initial",
-  "auditStatus": "pending"
+  "auditStatus": "pending",
+  "created": true
 }
 ```
+
+初审通过后，后台异步创建 JIRA；登记接口无需传入 JIRA 单号。初审不通过时不会创建 JIRA。
 
 ## 上传新版本并发起审核
 
@@ -206,6 +211,36 @@ curl -X POST http://localhost:5010/api/report-management/reports/register-upload
 ```text
 POST /api/report-management/reports/{reportId}/versions
 Content-Type: multipart/form-data
+```
+
+报告已定稿时返回 `409 REPORT_FINALIZED`。
+
+## 确认定稿
+
+仅当最新版本 AI 审核通过时允许定稿。接口可重复调用；定稿后禁止批次继续登记和用户继续上传，但不影响查看、预览和下载。
+
+```text
+POST /api/report-management/reports/{reportId}/finalize
+Content-Type: application/json
+```
+
+```json
+{
+  "operator": "页面用户"
+}
+```
+
+首次定稿返回 `201`，重复确认返回 `200`；最新版本未通过审核时返回 `409 REPORT_NOT_READY`。
+
+```json
+{
+  "reportId": 1,
+  "finalVersionId": 12,
+  "finalVersionNo": 3,
+  "finalizedAt": "2026-08-31 10:00:00",
+  "finalizedBy": "页面用户",
+  "created": true
+}
 ```
 
 表单字段：

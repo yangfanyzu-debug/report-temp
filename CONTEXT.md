@@ -12,9 +12,13 @@ _Avoid_: Batch report, file record
 A concrete DOCX file belonging to a Report Record. The initial generated file and every later user upload are separate versions.
 _Avoid_: Replacement file, overwritten report
 
-**Initial Report**:
-The first Report Version created by the scheduled backend batch process.
-_Avoid_: Original file, batch file
+**Batch-Generated Report**:
+A Report Version produced by the scheduled batch process. The first generation and every regeneration after a failed Initial Audit are immutable versions of the same Report Record.
+_Avoid_: Replacement file, overwritten initial report
+
+**Generation ID**:
+A caller-provided idempotency key for one batch generation attempt. Repeating registration with the same Generation ID returns the existing Report Version and AI Audit Record.
+_Avoid_: Batch number, version number
 
 **Uploaded Report**:
 A later Report Version uploaded by a user after manually revising a previous report.
@@ -28,12 +32,20 @@ _Avoid_: Single reupload, overwrite flow
 A new Uploaded Report created after the latest version has already passed audit. It becomes the latest version and returns the Report Record to an auditing state.
 _Avoid_: Locked passed report, final report
 
+**Finalized Report**:
+A Report Record whose latest passing Report Version has been explicitly confirmed as final. No new batch-generated or uploaded versions may be added, while viewing and downloading remain available.
+_Avoid_: Passed report, completed audit
+
+**JIRA Creation**:
+The idempotent external task creation triggered only when the latest Batch-Generated Report passes its Initial Audit. Its failure does not change the AI Audit result.
+_Avoid_: Audit completion, JIRA field update
+
 **AI Audit Record**:
 An audit result produced by the configured model for a specific Report Version. Every record is explicitly classified as an Initial Audit or Revision Audit; multiple records may exist for one version, and the UI normally shows the latest one.
 _Avoid_: Review result, validation result
 
 **Initial Audit**:
-An AI Audit Record created for an Initial Report. It uses the Initial Audit Prompt and checks language quality, directory and heading consistency, and basic document completeness.
+An AI Audit Record created for a Batch-Generated Report. It uses the Initial Audit Prompt and checks language quality, directory and heading consistency, and basic document completeness.
 _Avoid_: First pass, batch audit
 
 **Revision Audit**:

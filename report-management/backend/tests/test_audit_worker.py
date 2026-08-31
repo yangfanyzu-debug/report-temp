@@ -63,6 +63,7 @@ class FakeAuditRepository:
         self.completed = []
         self.errors = []
         self.events = []
+        self.jira_queues = []
         self.checkpoints = [{"id": 1, "name": "章节完整性", "content": "检查章节", "sortOrder": 10, "enabled": True}]
         self.checkpoint_reads = 0
         self.snapshots = []
@@ -100,6 +101,10 @@ class FakeAuditRepository:
         self.errors.append((audit_id, version_id, message))
         if self.mark_error_exception:
             raise self.mark_error_exception
+
+    def queue_jira_creation(self, report_id, version_id, audit_id):
+        self.jira_queues.append((report_id, version_id, audit_id))
+        return True
 
     def append_audit_event(self, audit_id, event_type, phase, content):
         if phase == self.fail_event_phase:
@@ -265,6 +270,7 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(repository.events[0][2], "started")
         self.assertTrue(any(event[1] == "model" for event in repository.events))
         self.assertEqual(repository.events[-1][2], "completed")
+        self.assertEqual(repository.jira_queues, [(1, 10, 99)])
 
     def test_worker_handles_no_pending_audit(self):
         result = AuditWorker(FakeAuditRepository(), FakeModelClient()).run_once()
@@ -349,6 +355,7 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(repository.requested_prompt_types, ["revision"])
         self.assertEqual(model_client.calls[0][1]["promptContent"], "修订提示词")
         self.assertNotIn("checkpoints", model_client.calls[0][2])
+        self.assertEqual(repository.jira_queues, [])
 
     def test_worker_executes_a_claimed_job_only_once(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

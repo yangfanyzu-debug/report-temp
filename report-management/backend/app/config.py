@@ -24,6 +24,9 @@ class Settings:
     deepseek_key: str
     deepseek_model: str
     worker_interval_seconds: int
+    jira_create_url: str
+    jira_api_token: str
+    jira_timeout_seconds: int
 
 
 def load_settings() -> Settings:
@@ -48,4 +51,7 @@ def load_settings() -> Settings:
         deepseek_key=api_key,
         deepseek_model=model,
         worker_interval_seconds=int(os.environ.get("REPORT_WORKER_INTERVAL_SECONDS", "15")),
+        jira_create_url=os.environ.get("REPORT_JIRA_CREATE_URL", "").strip(),
+        jira_api_token=os.environ.get("REPORT_JIRA_API_TOKEN", "").strip(),
+        jira_timeout_seconds=int(os.environ.get("REPORT_JIRA_TIMEOUT_SECONDS", "30")),
     )

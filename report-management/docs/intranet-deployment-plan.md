@@ -344,7 +344,7 @@ curl --fail --show-error \
   -F 'systemId=credit-card-center' \
   -F 'title=中信银行信用卡中心授权交易资源分析报告' \
   -F 'reportMonth=2026年08月' \
-  -F 'jiraId=CAPACITY-001' \
+  -F 'generationId=batch-202608-credit-card-center-001' \
   -F 'source=batch'
 ```
 

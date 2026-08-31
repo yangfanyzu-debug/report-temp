@@ -21,7 +21,7 @@ def upload_and_register_report(
     system_id: str,
     title: str,
     report_month: str,
-    jira_id: str = "",
+    generation_id: str,
 ) -> dict:
     report_file = Path(file_path).expanduser().resolve()
     if not report_file.is_file():
@@ -33,7 +33,7 @@ def upload_and_register_report(
         "systemId": system_id,
         "title": title,
         "reportMonth": report_month,
-        "jiraId": jira_id,
+        "generationId": generation_id,
         "source": "batch",
     }
 
@@ -57,6 +57,6 @@ if __name__ == "__main__":
         system_id="credit-card-center",
         title="中信银行信用卡中心授权交易资源分析报告",
         report_month="2026年08月",
-        jira_id="CAPACITY-001",
+        generation_id="batch-202608-credit-card-center-001",
     )
     print("报告上传并登记成功：", result)

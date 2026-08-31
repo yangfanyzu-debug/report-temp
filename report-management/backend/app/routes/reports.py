@@ -4,6 +4,7 @@ from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify, request
 
+from ..repositories.reports import ReportWorkflowConflict
 from ..services.file_naming import build_versioned_filename
 from ..services.file_storage import save_uploaded_docx, validate_docx_filename
 
@@ -52,7 +53,7 @@ def get_report(report_id: int):
 @reports.post("/register")
 def register_initial_report():
     payload = request.get_json(silent=True) or {}
-    required_fields = ["systemId", "title", "reportMonth", "filePath"]
+    required_fields = ["systemId", "title", "reportMonth", "filePath", "generationId"]
     missing = [field for field in required_fields if not str(payload.get(field, "")).strip()]
     if missing:
         return jsonify({"message": f"缺少必要参数：{', '.join(missing)}"}), 400
@@ -63,11 +64,11 @@ def register_initial_report():
             "title": payload["title"].strip(),
             "reportMonth": payload["reportMonth"].strip(),
             "filePath": payload["filePath"].strip(),
-            "jiraId": str(payload.get("jiraId", "")).strip(),
+            "generationId": payload["generationId"].strip(),
             "source": payload.get("source", "batch"),
         }
     )
-    return jsonify(result), 201
+    return jsonify(result), 201 if result.get("created", True) else 200
 
 
 @reports.post("/register-upload")
@@ -76,7 +77,7 @@ def upload_and_register_initial_report():
     if uploaded is None or not uploaded.filename:
         return jsonify({"message": "请选择要上传的 DOCX 文件"}), 400
 
-    required_fields = ["systemId", "title", "reportMonth"]
+    required_fields = ["systemId", "title", "reportMonth", "generationId"]
     missing = [field for field in required_fields if not request.form.get(field, "").strip()]
     if missing:
         return jsonify({"message": f"缺少必要参数：{', '.join(missing)}"}), 400
@@ -113,14 +114,16 @@ def upload_and_register_initial_report():
                 "filePath": str(saved_path),
                 "fileName": original_filename,
                 "fileSize": saved_path.stat().st_size,
-                "jiraId": request.form.get("jiraId", "").strip(),
+                "generationId": request.form["generationId"].strip(),
                 "source": request.form.get("source", "batch").strip() or "batch",
             }
         )
     except Exception:
         saved_path.unlink(missing_ok=True)
         raise
-    return jsonify(result), 201
+    if not result.get("created", True):
+        saved_path.unlink(missing_ok=True)
+    return jsonify(result), 201 if result.get("created", True) else 200
 
 
 @reports.post("/<int:report_id>/versions")
@@ -132,6 +135,10 @@ def upload_report_version(report_id: int):
     context = _repository().prepare_uploaded_version(report_id)
     if context is None:
         return jsonify({"message": "未找到该报告"}), 404
+    if context.get("isFinalized"):
+        return jsonify(
+            {"message": "报告已定稿，不能继续新增版本", "code": "REPORT_FINALIZED"}
+        ), 409
 
     try:
         original_filename = validate_docx_filename(uploaded.filename)
@@ -151,14 +158,33 @@ def upload_report_version(report_id: int):
         return jsonify({"message": str(error)}), 400
 
     uploader = request.form.get("uploader", "").strip() or "未知用户"
-    result = _repository().create_uploaded_version(
-        {
-            "reportId": report_id,
-            "versionNo": version_no,
-            "fileName": original_filename,
-            "filePath": str(saved_path),
-            "fileSize": saved_path.stat().st_size,
-            "uploader": uploader,
-        }
-    )
+    try:
+        result = _repository().create_uploaded_version(
+            {
+                "reportId": report_id,
+                "versionNo": version_no,
+                "fileName": original_filename,
+                "filePath": str(saved_path),
+                "fileSize": saved_path.stat().st_size,
+                "uploader": uploader,
+            }
+        )
+    except ReportWorkflowConflict:
+        saved_path.unlink(missing_ok=True)
+        raise
     return jsonify(result), 201
+
+
+@reports.post("/<int:report_id>/finalize")
+def finalize_report(report_id: int):
+    payload = request.get_json(silent=True) or {}
+    operator = str(payload.get("operator", "")).strip() or "未知用户"
+    result = _repository().finalize_report(report_id, operator)
+    if result is None:
+        return jsonify({"message": "未找到该报告"}), 404
+    return jsonify(result), 201 if result.get("created") else 200
+
+
+@reports.errorhandler(ReportWorkflowConflict)
+def handle_report_workflow_conflict(error: ReportWorkflowConflict):
+    return jsonify({"message": str(error), "code": error.code}), 409
