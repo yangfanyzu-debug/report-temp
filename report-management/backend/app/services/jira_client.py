@@ -24,14 +24,11 @@ class JiraClient:
         if not self.configured:
             raise JiraNotConfigured("未配置JIRA创建接口")
         jira_title = str(job.get("jiraTitle") or "").strip()
-        if not jira_title:
-            raise RuntimeError("AI初审结果中缺少JIRA标题")
         if len(jira_title) > 15:
             raise RuntimeError("AI生成的JIRA标题超过15个字符")
-        payload = {
-            "systemId": job["systemId"],
-            "title": jira_title,
-        }
+        payload = {"systemId": job["systemId"]}
+        if jira_title:
+            payload["title"] = jira_title
         headers = {
             "Content-Type": "application/json",
             "Idempotency-Key": f"capability-report-{job['reportId']}",

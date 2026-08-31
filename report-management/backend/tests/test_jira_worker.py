@@ -138,6 +138,28 @@ class JiraWorkerTest(unittest.TestCase):
 
         self.assertEqual(title, "信用卡中心容量审核通过")
 
+    @patch("app.services.jira_client.urllib.request.urlopen")
+    def test_client_uses_api_default_when_ai_title_is_missing(self, urlopen):
+        urlopen.return_value = io.BytesIO(
+            json.dumps(
+                {"retCode": 200, "retData": {"key": "LMP-1583"}, "retDesc": "success"}
+            ).encode()
+        )
+        settings = SimpleNamespace(
+            jira_create_url="http://jira-api/issues",
+            jira_timeout_seconds=30,
+        )
+        job = {**self.job, "jiraTitle": ""}
+
+        jira_id = JiraClient(settings).create_issue(job)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(jira_id, "LMP-1583")
+        self.assertEqual(
+            json.loads(request.data.decode("utf-8")),
+            {"systemId": "credit-card-center"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

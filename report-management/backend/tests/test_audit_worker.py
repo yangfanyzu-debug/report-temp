@@ -281,7 +281,7 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(repository.events[-1][2], "completed")
         self.assertEqual(repository.jira_queues, [(1, 10, 99)])
 
-    def test_initial_pass_without_jira_title_marks_audit_error(self):
+    def test_initial_pass_without_jira_title_still_queues_jira(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             path = Path(temporary_dir) / "报告.docx"
             write_docx(path)
@@ -309,9 +309,9 @@ class AuditWorkerTest(unittest.TestCase):
 
             result = AuditWorker(repository, model_client).run_once()
 
-        self.assertEqual(result["status"], "error")
-        self.assertIn("未生成JIRA标题", repository.errors[0][2])
-        self.assertEqual(repository.jira_queues, [])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(repository.errors, [])
+        self.assertEqual(repository.jira_queues, [(1, 10, 99)])
 
     def test_worker_handles_no_pending_audit(self):
         result = AuditWorker(FakeAuditRepository(), FakeModelClient()).run_once()
