@@ -30,15 +30,24 @@ class DeepSeekClient:
         if not api_url or not api_key or not model_name:
             raise DeepSeekNotConfigured("共用模型连接配置不完整")
 
+        output_protocol = (
+            "\n\n【本次输出协议】首行必须为“审核结论：通过”或“审核结论：不通过”；"
+        )
+        if prompt.get("auditType") == "initial":
+            output_protocol += (
+                "若结论为通过，第二行必须为“JIRA标题：<标题>”；标题需根据本报告内容和审核结果生成，"
+                "不超过15个中文字符，不要使用固定的通用标题；"
+            )
+        output_protocol += (
+            "后续使用中文 Markdown 输出审核总结、发现的问题和修改建议；不要输出 JSON。"
+            "此协议优先于上文中的旧输出格式要求。"
+        )
         request_payload = {
             "model": model_name,
             "messages": [
                 {
                     "role": "system",
-                    "content": prompt["promptContent"]
-                    + "\n\n【本次输出协议】首行必须为“审核结论：通过”或“审核结论：不通过”；"
-                    "后续使用中文 Markdown 输出审核总结、发现的问题和修改建议；不要输出 JSON。"
-                    "此协议优先于上文中的旧输出格式要求。",
+                    "content": prompt["promptContent"] + output_protocol,
                 },
                 {
                     "role": "user",
@@ -157,4 +166,11 @@ def parse_model_result(content: str) -> dict[str, str]:
         raise ValueError("模型输出为空")
     match = re.search(r"审核结论\s*[：:]\s*(不通过|通过)", cleaned[:300])
     conclusion = {"通过": "passed", "不通过": "failed"}.get(match.group(1), "completed") if match else "completed"
-    return {"resultText": cleaned, "conclusion": conclusion}
+    title_match = re.search(r"JIRA标题\s*[：:]\s*([^\r\n]+)", cleaned[:500], re.IGNORECASE)
+    jira_title = _normalize_jira_title(title_match.group(1)) if title_match else ""
+    return {"resultText": cleaned, "conclusion": conclusion, "jiraTitle": jira_title}
+
+
+def _normalize_jira_title(value: str) -> str:
+    title = re.sub(r"^[`*_#\s]+|[`*_#\s]+$", "", value).strip("，。；;：:")
+    return title[:15]

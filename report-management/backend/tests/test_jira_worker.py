@@ -14,6 +14,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.jira_client import JiraClient  # noqa: E402
 from app.services.jira_worker import JiraWorker  # noqa: E402
+from app.repositories.jira import _extract_jira_title  # noqa: E402
 
 
 class FakeJiraRepository:
@@ -56,7 +57,8 @@ class JiraWorkerTest(unittest.TestCase):
             "systemId": "credit-card-center",
             "title": "容量报告",
             "reportMonth": "2026年08月",
-            "auditResult": "审核结论：通过",
+            "auditResult": "审核结论：通过\nJIRA标题：信用卡容量审核通过",
+            "jiraTitle": "信用卡容量审核通过",
         }
 
     def test_worker_creates_jira(self):
@@ -101,8 +103,6 @@ class JiraWorkerTest(unittest.TestCase):
         urlopen.return_value = response
         settings = SimpleNamespace(
             jira_create_url="http://10.2.64.36:9212/osenv/cap/confirm/jira",
-            jira_issue_title="性能容量报告复核任务",
-            jira_api_token="",
             jira_timeout_seconds=30,
         )
 
@@ -113,8 +113,9 @@ class JiraWorkerTest(unittest.TestCase):
         self.assertEqual(request.headers["Idempotency-key"], "capability-report-1")
         self.assertEqual(
             json.loads(request.data.decode("utf-8")),
-            {"systemId": "credit-card-center", "title": "性能容量报告复核任务"},
+            {"systemId": "credit-card-center", "title": "信用卡容量审核通过"},
         )
+        self.assertIsNone(request.get_header("Authorization"))
 
     @patch("app.services.jira_client.urllib.request.urlopen")
     def test_client_rejects_failed_business_response(self, urlopen):
@@ -124,13 +125,18 @@ class JiraWorkerTest(unittest.TestCase):
         urlopen.return_value = response
         settings = SimpleNamespace(
             jira_create_url="http://jira-api/issues",
-            jira_issue_title="性能容量报告复核任务",
-            jira_api_token="",
             jira_timeout_seconds=30,
         )
 
         with self.assertRaisesRegex(RuntimeError, "创建失败"):
             JiraClient(settings).create_issue(self.job)
+
+    def test_extracts_ai_generated_title_from_audit_result(self):
+        title = _extract_jira_title(
+            "审核结论：通过\nJIRA标题：信用卡中心容量审核通过\n\n## 审核总结"
+        )
+
+        self.assertEqual(title, "信用卡中心容量审核通过")
 
 
 if __name__ == "__main__":

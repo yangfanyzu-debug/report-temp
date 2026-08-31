@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..database import Database
@@ -55,6 +56,7 @@ class MySqlJiraRepository:
             "title": row["title"],
             "reportMonth": row["report_month"],
             "auditResult": row["result_text"],
+            "jiraTitle": _extract_jira_title(row["result_text"]),
         }
 
     def mark_created(self, report_id: int, jira_id: str) -> None:
@@ -80,3 +82,13 @@ class MySqlJiraRepository:
                     """,
                     [message[:2000], report_id],
                 )
+
+
+def _extract_jira_title(result_text: Any) -> str:
+    match = re.search(
+        r"JIRA标题\s*[：:]\s*([^\r\n]+)", str(result_text or "")[:500], re.IGNORECASE
+    )
+    if not match:
+        return ""
+    title = re.sub(r"^[`*_#\s]+|[`*_#\s]+$", "", match.group(1)).strip()
+    return title[:15]

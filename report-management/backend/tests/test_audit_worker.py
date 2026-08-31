@@ -116,8 +116,9 @@ class FakeAuditRepository:
 class FakeModelClient:
     def __init__(self, result=None):
         self.result = result or {
-            "resultText": "审核结论：通过\n\n## 审核总结\n未发现明显问题。",
+            "resultText": "审核结论：通过\nJIRA标题：容量基线审核通过\n\n## 审核总结\n未发现明显问题。",
             "conclusion": "passed",
+            "jiraTitle": "容量基线审核通过",
         }
         self.calls = []
 
@@ -212,6 +213,14 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(parse_model_result("审核结论：不通过\n存在问题")["conclusion"], "failed")
         self.assertEqual(parse_model_result("审核工作已经完成")["conclusion"], "completed")
 
+    def test_parse_model_result_extracts_and_limits_jira_title(self):
+        result = parse_model_result(
+            "审核结论：通过\nJIRA标题：信用卡中心性能容量报告审核通过\n内容完整"
+        )
+
+        self.assertEqual(result["jiraTitle"], "信用卡中心性能容量报告审核通过")
+        self.assertLessEqual(len(result["jiraTitle"]), 15)
+
     def test_chat_completions_url_accepts_base_or_full_url(self):
         self.assertEqual(
             chat_completions_url("https://ark.cn-beijing.volces.com/api/coding/v3"),
@@ -271,6 +280,38 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertTrue(any(event[1] == "model" for event in repository.events))
         self.assertEqual(repository.events[-1][2], "completed")
         self.assertEqual(repository.jira_queues, [(1, 10, 99)])
+
+    def test_initial_pass_without_jira_title_marks_audit_error(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = Path(temporary_dir) / "报告.docx"
+            write_docx(path)
+            repository = FakeAuditRepository(
+                {
+                    "auditId": 99,
+                    "reportId": 1,
+                    "versionId": 10,
+                    "auditType": "initial",
+                    "filePath": str(path),
+                    "fileName": "报告.docx",
+                    "systemId": "credit-card-center",
+                    "title": "报告",
+                    "reportMonth": "2026年08月",
+                },
+                {"initial": {"id": 1, "version": 1, "promptContent": "请审核"}},
+            )
+            model_client = FakeModelClient(
+                {
+                    "resultText": "审核结论：通过\n内容完整",
+                    "conclusion": "passed",
+                    "jiraTitle": "",
+                }
+            )
+
+            result = AuditWorker(repository, model_client).run_once()
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("未生成JIRA标题", repository.errors[0][2])
+        self.assertEqual(repository.jira_queues, [])
 
     def test_worker_handles_no_pending_audit(self):
         result = AuditWorker(FakeAuditRepository(), FakeModelClient()).run_once()
@@ -461,6 +502,7 @@ class AuditWorkerTest(unittest.TestCase):
                 },
                 {
                     "promptContent": "只审核可读取内容",
+                    "auditType": "initial",
                     "apiUrl": "https://legacy-prompt.test/v1",
                     "apiKey": "legacy-prompt-secret",
                     "modelName": "legacy-prompt-model",
@@ -476,6 +518,8 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer shared-config-secret")
         self.assertEqual(payload["model"], "shared-config-model")
         self.assertIn("首行必须为“审核结论：通过”或“审核结论：不通过”", system_message)
+        self.assertIn("JIRA标题", system_message)
+        self.assertIn("不超过15个中文字符", system_message)
         self.assertIn("后续使用中文 Markdown", system_message)
         self.assertIn("不要输出 JSON", system_message)
         self.assertNotIn("检查点", user_message)

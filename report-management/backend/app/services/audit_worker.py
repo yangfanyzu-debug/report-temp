@@ -86,13 +86,20 @@ class AuditWorker:
                     pending_length = 0
                     last_flush_at = now
 
+            runtime_prompt = {**prompt, "auditType": audit_type}
             result = self.model_client.audit_report(
-                model_config, prompt, audit_input, on_delta=handle_delta
+                model_config, runtime_prompt, audit_input, on_delta=handle_delta
             )
             if pending_chunks:
                 self.repository.append_audit_event(
                     job["auditId"], "model", "streaming", "".join(pending_chunks)
                 )
+            if (
+                audit_type == "initial"
+                and result["conclusion"] == "passed"
+                and not result.get("jiraTitle")
+            ):
+                raise RuntimeError("AI初审通过但未生成JIRA标题")
             self.repository.append_audit_event(job["auditId"], "system", "saving", "模型输出完成，正在保存审核结果")
             self.repository.mark_audit_complete(job["auditId"], job["versionId"], result)
             if audit_type == "initial" and result["conclusion"] == "passed":

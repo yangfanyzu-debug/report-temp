@@ -23,16 +23,19 @@ class JiraClient:
     def create_issue(self, job: dict[str, Any]) -> str:
         if not self.configured:
             raise JiraNotConfigured("未配置JIRA创建接口")
+        jira_title = str(job.get("jiraTitle") or "").strip()
+        if not jira_title:
+            raise RuntimeError("AI初审结果中缺少JIRA标题")
+        if len(jira_title) > 15:
+            raise RuntimeError("AI生成的JIRA标题超过15个字符")
         payload = {
             "systemId": job["systemId"],
-            "title": self.settings.jira_issue_title or "性能容量报告复核任务",
+            "title": jira_title,
         }
         headers = {
             "Content-Type": "application/json",
             "Idempotency-Key": f"capability-report-{job['reportId']}",
         }
-        if self.settings.jira_api_token:
-            headers["Authorization"] = f"Bearer {self.settings.jira_api_token}"
         request = urllib.request.Request(
             self.settings.jira_create_url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
