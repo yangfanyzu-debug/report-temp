@@ -140,12 +140,20 @@ class AuditRepositoryTest(unittest.TestCase):
 
         select_sql, select_params = database.cursor.executions[0]
         update_sql, update_params = database.cursor.executions[1]
+        version_update_sql, version_update_params = database.cursor.executions[2]
         self.assertIn("audit.audit_type IN ('initial', 'revision')", select_sql)
+        self.assertIn("audit.status = 'pending'", select_sql)
+        self.assertIn("audit.status = 'running'", select_sql)
+        self.assertIn("INTERVAL 10 MINUTE", select_sql)
         self.assertIn("FOR UPDATE", select_sql)
         self.assertEqual(select_params, [])
         self.assertIn("SET status = 'running'", update_sql)
-        self.assertIn("WHERE id = %s AND status = 'pending'", update_sql)
+        self.assertIn("status = 'pending'", update_sql)
+        self.assertIn("status = 'running'", update_sql)
+        self.assertIn("INTERVAL 10 MINUTE", update_sql)
         self.assertEqual(update_params, [99])
+        self.assertIn("capability_report_version SET audit_status = 'running'", version_update_sql)
+        self.assertEqual(version_update_params, [10])
         self.assertEqual(job["auditType"], "revision")
         self.assertEqual(database.commits, 1)
         self.assertEqual(database.rollbacks, 0)

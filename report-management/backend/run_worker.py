@@ -14,6 +14,18 @@ from app.services.jira_client import JiraClient
 from app.services.jira_worker import JiraWorker
 
 
+def process_next(audit_worker, agent_worker, jira_worker):
+    audit_result = audit_worker.run_once()
+    if audit_result["processed"]:
+        return audit_result
+    agent_result = agent_worker.run_once()
+    return agent_result if agent_result["processed"] else jira_worker.run_once()
+
+
+def should_wait(result: dict) -> bool:
+    return not result.get("processed", False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run report AI audit worker")
     parser.add_argument("--once", action="store_true", help="process one pending audit and exit")
@@ -27,20 +39,15 @@ def main() -> None:
     audit_worker = AuditWorker(repository, model_client)
     jira_worker = JiraWorker(MySqlJiraRepository(database), JiraClient(settings))
 
-    def run_once():
-        agent_result = agent_worker.run_once()
-        if agent_result["processed"]:
-            return agent_result
-        audit_result = audit_worker.run_once()
-        return audit_result if audit_result["processed"] else jira_worker.run_once()
-
     if args.once:
-        print(run_once())
+        print(process_next(audit_worker, agent_worker, jira_worker))
         return
 
     while True:
-        print(run_once(), flush=True)
-        time.sleep(settings.worker_interval_seconds)
+        result = process_next(audit_worker, agent_worker, jira_worker)
+        print(result, flush=True)
+        if should_wait(result):
+            time.sleep(settings.worker_interval_seconds)
 
 
 if __name__ == "__main__":

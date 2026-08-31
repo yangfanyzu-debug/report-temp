@@ -719,9 +719,21 @@ class MySqlAuditRepository:
                         FROM capability_report_audit audit
                         JOIN capability_report_version version ON version.id = audit.version_id
                         JOIN capability_report_log report ON report.id = audit.report_id
-                        WHERE audit.status = 'pending'
+                        WHERE (
+                              audit.status = 'pending'
+                              OR (
+                                  audit.status = 'running'
+                                  AND (
+                                      audit.started_at IS NULL
+                                      OR audit.started_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 10 MINUTE)
+                                  )
+                              )
+                          )
                           AND audit.audit_type IN ('initial', 'revision')
-                        ORDER BY audit.create_time ASC, audit.id ASC
+                        ORDER BY
+                          CASE WHEN audit.status = 'pending' THEN 0 ELSE 1 END,
+                          audit.create_time ASC,
+                          audit.id ASC
                         LIMIT 1
                         FOR UPDATE
                         """
@@ -735,12 +747,26 @@ class MySqlAuditRepository:
                            SET status = 'running',
                                started_at = CURRENT_TIMESTAMP(3),
                                error_message = NULL
-                         WHERE id = %s AND status = 'pending'
+                         WHERE id = %s
+                           AND (
+                               status = 'pending'
+                               OR (
+                                   status = 'running'
+                                   AND (
+                                       started_at IS NULL
+                                       OR started_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 10 MINUTE)
+                                   )
+                               )
+                           )
                         """,
                         [row["audit_id"]],
                     )
                     if cursor.rowcount != 1:
                         raise _AuditClaimLost()
+                    cursor.execute(
+                        "UPDATE capability_report_version SET audit_status = 'running' WHERE id = %s",
+                        [row["version_id"]],
+                    )
         except _AuditClaimLost:
             return None
         if row is None:
