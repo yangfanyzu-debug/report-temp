@@ -28,9 +28,15 @@ def make_docx(content: str = "报告内容") -> io.BytesIO:
 
 
 class RecordingCursor:
-    def __init__(self, version_type: str = "uploaded", latest_audit: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        version_type: str = "uploaded",
+        latest_audit: dict[str, Any] | None = None,
+        latest_version_no: int = 2,
+    ):
         self.version_type = version_type
         self.latest_audit = latest_audit
+        self.latest_version_no = latest_version_no
         self.executions: list[tuple[str, list[Any]]] = []
         self.last_sql = ""
         self.lastrowid = 0
@@ -65,6 +71,8 @@ class RecordingCursor:
             return None
         if "SELECT finalized_at FROM capability_report_log" in self.last_sql:
             return {"finalized_at": None}
+        if "SELECT COALESCE(MAX(version_no), 0) AS latest_version_no" in self.last_sql:
+            return {"latest_version_no": self.latest_version_no}
         if "FROM capability_report_version version" in self.last_sql:
             return {"id": 10, "version_type": self.version_type}
         if "FROM capability_report_audit" in self.last_sql:
@@ -265,6 +273,7 @@ class FakeReportRepository:
         }
         self.finalized_report_ids = []
         self.upload_context_finalized = False
+        self.upload_error = None
         self.register_created = True
 
     def list_reports(self, filters, page_num, page_size):
@@ -322,6 +331,8 @@ class FakeReportRepository:
 
     def create_uploaded_version(self, payload):
         self.created_upload_payload = payload
+        if self.upload_error:
+            raise self.upload_error
         return {
             "reportId": 1,
             "versionId": 11,
@@ -668,6 +679,21 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json["code"], "REPORT_FINALIZED")
 
+    def test_upload_report_version_removes_file_after_repository_error(self):
+        self.repository.upload_error = RuntimeError("数据库不可用")
+
+        with self.assertRaisesRegex(RuntimeError, "数据库不可用"):
+            self.client.post(
+                "/api/report-management/reports/1/versions",
+                data={"file": (make_docx(), "报告.docx")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(
+            sorted(path.name for path in Path(self.storage.name).iterdir()),
+            ["preview.docx"],
+        )
+
     def test_finalize_report(self):
         response = self.client.post(
             "/api/report-management/reports/1/finalize", json={"operator": "张三"}
@@ -797,6 +823,39 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(uploaded_insert[1], [1, 11, "revision"])
         self.assertEqual(initial_result["auditType"], "initial")
         self.assertEqual(uploaded_result["auditType"], "revision")
+
+    def test_uploaded_version_number_is_allocated_while_report_is_locked(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        cursor = RecordingCursor(latest_version_no=4)
+
+        result = MySqlReportRepository(RecordingDatabase(cursor)).create_uploaded_version(
+            {
+                "reportId": 1,
+                "fileName": "revision.docx",
+                "filePath": "/tmp/revision.docx",
+                "fileSize": 200,
+                "uploader": "张三",
+            }
+        )
+
+        statements = [item[0] for item in cursor.executions]
+        report_lock_index = next(
+            index for index, sql in enumerate(statements) if sql.endswith("FOR UPDATE")
+        )
+        version_query_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "SELECT COALESCE(MAX(version_no), 0) AS latest_version_no" in sql
+        )
+        version_insert = next(
+            item
+            for item in cursor.executions
+            if item[0].startswith("INSERT INTO capability_report_version")
+        )
+        self.assertLess(report_lock_index, version_query_index)
+        self.assertEqual(version_insert[1][1], 5)
+        self.assertEqual(result["versionNo"], 5)
 
     def test_report_repository_rejects_unknown_audit_type(self):
         from app.repositories.reports import MySqlReportRepository

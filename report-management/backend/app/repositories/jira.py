@@ -1,14 +1,50 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from ..database import Database
 
 
 class MySqlJiraRepository:
+    WORKER_LOCK_NAME = "report-management-jira-worker"
+
     def __init__(self, database: Database):
         self.database = database
+
+    @contextmanager
+    def processing_lock(self) -> Iterator[bool]:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT GET_LOCK(%s, 0) AS acquired",
+                    [self.WORKER_LOCK_NAME],
+                )
+                acquired = bool(cursor.fetchone()["acquired"])
+                try:
+                    yield acquired
+                finally:
+                    if acquired:
+                        cursor.execute(
+                            "SELECT RELEASE_LOCK(%s)",
+                            [self.WORKER_LOCK_NAME],
+                        )
+
+    def recover_interrupted_jobs(self) -> int:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE capability_report_log
+                       SET jira_status = 'pending',
+                           jira_attempts = GREATEST(jira_attempts - 1, 0),
+                           jira_error = 'JIRA任务执行中断，已自动重新排队'
+                     WHERE jira_status = 'creating'
+                       AND COALESCE(jira_id, '') = ''
+                    """
+                )
+                return int(cursor.rowcount)
 
     def next_pending_job(self) -> dict[str, Any] | None:
         with self.database.connection() as connection:

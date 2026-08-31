@@ -4,9 +4,10 @@ import io
 import json
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -14,16 +15,28 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.jira_client import JiraClient  # noqa: E402
 from app.services.jira_worker import JiraWorker  # noqa: E402
-from app.repositories.jira import _extract_jira_title  # noqa: E402
+from app.repositories.jira import MySqlJiraRepository, _extract_jira_title  # noqa: E402
 
 
 class FakeJiraRepository:
-    def __init__(self, job=None):
+    def __init__(self, job=None, lock_acquired=True):
         self.job = job
+        self.lock_acquired = lock_acquired
         self.created = []
         self.errors = []
+        self.calls = []
+
+    @contextmanager
+    def processing_lock(self):
+        self.calls.append("lock")
+        yield self.lock_acquired
+
+    def recover_interrupted_jobs(self):
+        self.calls.append("recover")
+        return 0
 
     def next_pending_job(self):
+        self.calls.append("next")
         job, self.job = self.job, None
         return job
 
@@ -70,6 +83,7 @@ class JiraWorkerTest(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         self.assertEqual(repository.created, [(1, "CAP-100")])
         self.assertEqual(repository.errors, [])
+        self.assertEqual(repository.calls, ["lock", "recover", "next"])
 
     def test_worker_keeps_job_pending_when_not_configured(self):
         repository = FakeJiraRepository(self.job)
@@ -77,6 +91,16 @@ class JiraWorkerTest(unittest.TestCase):
         result = JiraWorker(repository, FakeJiraClient(configured=False)).run_once()
 
         self.assertEqual(result, {"processed": False, "reason": "jira_not_configured"})
+        self.assertIsNotNone(repository.job)
+        self.assertEqual(repository.calls, [])
+
+    def test_worker_skips_recovery_and_claim_when_lock_is_busy(self):
+        repository = FakeJiraRepository(self.job, lock_acquired=False)
+
+        result = JiraWorker(repository, FakeJiraClient()).run_once()
+
+        self.assertEqual(result, {"processed": False, "reason": "jira_worker_busy"})
+        self.assertEqual(repository.calls, ["lock"])
         self.assertIsNotNone(repository.job)
 
     def test_worker_records_jira_error_without_changing_audit(self):
@@ -88,6 +112,32 @@ class JiraWorkerTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(repository.errors, [(1, "JIRA不可用")])
+
+    def test_repository_lock_is_released_and_interrupted_jobs_are_requeued(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"acquired": 1}
+        cursor.rowcount = 2
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        database = MagicMock()
+
+        @contextmanager
+        def database_connection():
+            yield connection
+
+        database.connection.side_effect = database_connection
+        repository = MySqlJiraRepository(database)
+
+        with repository.processing_lock() as acquired:
+            self.assertTrue(acquired)
+        recovered = repository.recover_interrupted_jobs()
+
+        statements = [" ".join(call.args[0].split()) for call in cursor.execute.call_args_list]
+        self.assertTrue(statements[0].startswith("SELECT GET_LOCK"))
+        self.assertTrue(statements[1].startswith("SELECT RELEASE_LOCK"))
+        self.assertIn("jira_status = 'pending'", statements[2])
+        self.assertIn("jira_attempts = GREATEST(jira_attempts - 1, 0)", statements[2])
+        self.assertEqual(recovered, 2)
 
     @patch("app.services.jira_client.urllib.request.urlopen")
     def test_client_uses_internal_api_contract(self, urlopen):

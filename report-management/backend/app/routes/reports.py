@@ -162,14 +162,13 @@ def upload_report_version(report_id: int):
         result = _repository().create_uploaded_version(
             {
                 "reportId": report_id,
-                "versionNo": version_no,
                 "fileName": original_filename,
                 "filePath": str(saved_path),
                 "fileSize": saved_path.stat().st_size,
                 "uploader": uploader,
             }
         )
-    except ReportWorkflowConflict:
+    except Exception:
         saved_path.unlink(missing_ok=True)
         raise
     return jsonify(result), 201

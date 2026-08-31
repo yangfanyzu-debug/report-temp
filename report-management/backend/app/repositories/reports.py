@@ -407,13 +407,22 @@ class MySqlReportRepository:
                     raise ReportFinalizedError()
                 cursor.execute(
                     """
+                    SELECT COALESCE(MAX(version_no), 0) AS latest_version_no
+                      FROM capability_report_version
+                     WHERE report_id = %s
+                    """,
+                    [payload["reportId"]],
+                )
+                version_no = int(cursor.fetchone()["latest_version_no"]) + 1
+                cursor.execute(
+                    """
                     INSERT INTO capability_report_version
                       (`report_id`, `version_no`, `version_type`, `file_name`, `file_path`, `file_size`, `audit_status`, `uploader`, `source`)
                     VALUES (%s, %s, 'uploaded', %s, %s, %s, 'pending', %s, 'upload')
                     """,
                     [
                         payload["reportId"],
-                        payload["versionNo"],
+                        version_no,
                         payload["fileName"],
                         payload["filePath"],
                         payload["fileSize"],
@@ -427,7 +436,7 @@ class MySqlReportRepository:
         return {
             "reportId": payload["reportId"],
             "versionId": version_id,
-            "versionNo": payload["versionNo"],
+            "versionNo": version_no,
             "auditId": audit_id,
             "auditType": "revision",
             "auditStatus": "pending",
