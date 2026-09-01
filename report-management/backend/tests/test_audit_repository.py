@@ -34,6 +34,10 @@ class RecordingCursor:
             raise RuntimeError("database write failed")
 
     def fetchone(self):
+        if self.last_sql.startswith(
+            "SELECT status FROM capability_report_audit WHERE id = %s FOR UPDATE"
+        ):
+            return {"status": getattr(self, "audit_status", "running")}
         if "SELECT id, api_key FROM capability_report_ai_config" in self.last_sql:
             return {"id": 1, "api_key": "kept-key"}
         if "SELECT id FROM capability_report_ai_config" in self.last_sql:
@@ -202,10 +206,30 @@ class AuditRepositoryTest(unittest.TestCase):
             {"modelName": "audit-model"},
         )
 
-        statement, params = database.cursor.executions[0]
+        lock_statement, lock_params = database.cursor.executions[0]
+        statement, params = database.cursor.executions[1]
+        self.assertIn("SELECT status FROM capability_report_audit", lock_statement)
+        self.assertIn("FOR UPDATE", lock_statement)
+        self.assertEqual(lock_params, [14370])
         self.assertIn("model_name = %s WHERE id = %s", statement)
         self.assertNotIn("model_name = %s, WHERE", statement)
         self.assertEqual(params, [7, 2, "audit-model", 14370])
+
+    def test_set_audit_execution_context_rejects_non_running_audit(self):
+        database = RecordingDatabase()
+        database.cursor.audit_status = "failed"
+        repository = MySqlAuditRepository(database)
+
+        with self.assertRaisesRegex(RuntimeError, "审核任务不在运行状态"):
+            repository.set_audit_execution_context(
+                14370,
+                {"id": 7, "version": 2},
+                {"modelName": "audit-model"},
+            )
+
+        self.assertEqual(len(database.cursor.executions), 1)
+        self.assertEqual(database.commits, 0)
+        self.assertEqual(database.rollbacks, 1)
 
     def test_create_prompt_version_locks_before_calculating_and_updating_type(self):
         database = RecordingDatabase()

@@ -789,17 +789,22 @@ class MySqlAuditRepository:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
+                    "SELECT status FROM capability_report_audit WHERE id = %s FOR UPDATE",
+                    [audit_id],
+                )
+                audit = cursor.fetchone()
+                if audit is None or audit["status"] != "running":
+                    raise RuntimeError("审核任务不在运行状态")
+                cursor.execute(
                     """
                     UPDATE capability_report_audit
                        SET prompt_id = %s,
                            prompt_version = %s,
                            model_name = %s
-                     WHERE id = %s AND status = 'running'
+                     WHERE id = %s
                     """,
                     [prompt["id"], prompt["version"], model_config["modelName"], audit_id],
                 )
-                if cursor.rowcount != 1:
-                    raise RuntimeError("审核任务不在运行状态")
 
     def mark_audit_complete(self, audit_id: int, version_id: int, result: dict[str, Any]) -> None:
         conclusion = result["conclusion"]
