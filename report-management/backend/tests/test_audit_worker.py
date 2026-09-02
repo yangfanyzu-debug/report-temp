@@ -18,6 +18,8 @@ from app.services.audit_worker import AuditWorker  # noqa: E402
 from app.services.deepseek_client import (  # noqa: E402
     DeepSeekClient,
     DeepSeekNotConfigured,
+    build_agent_system_content,
+    build_audit_output_protocol,
     chat_completions_url,
     parse_chat_stream,
     parse_model_result,
@@ -213,6 +215,16 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(parse_model_result("审核结论：不通过\n存在问题")["conclusion"], "failed")
         self.assertEqual(parse_model_result("审核工作已经完成")["conclusion"], "completed")
 
+    def test_parse_model_result_uses_last_standalone_conclusion(self):
+        result = parse_model_result(
+            "历史说明中提到审核结论：不通过，但本次未发现问题。\n"
+            "审核结论：不通过\n"
+            "复核后确认无实际问题。\n"
+            "审核结论：通过"
+        )
+
+        self.assertEqual(result["conclusion"], "passed")
+
     def test_parse_model_result_extracts_and_limits_jira_title(self):
         result = parse_model_result(
             "审核结论：通过\nJIRA标题：信用卡中心性能容量报告审核通过\n内容完整"
@@ -220,6 +232,35 @@ class AuditWorkerTest(unittest.TestCase):
 
         self.assertEqual(result["jiraTitle"], "信用卡中心性能容量报告审核通过")
         self.assertLessEqual(len(result["jiraTitle"]), 15)
+
+    def test_parse_model_result_extracts_jira_title_after_long_markdown(self):
+        result = parse_model_result(
+            "## 审核总结\n" + "报告内容正常。" * 100 + "\n"
+            "JIRA标题：容量报告初审通过\n"
+            "审核结论：通过"
+        )
+
+        self.assertEqual(result["jiraTitle"], "容量报告初审通过")
+        self.assertEqual(result["conclusion"], "passed")
+
+    def test_audit_protocol_requires_evidence_consistent_conclusion(self):
+        protocol = build_audit_output_protocol("initial")
+
+        self.assertIn("未发现确认问题，必须判定为通过", protocol)
+        self.assertIn("无法判断、证据不足", protocol)
+        self.assertIn("不通过时必须列出至少一项确认问题", protocol)
+        self.assertIn("JIRA标题", protocol)
+
+    def test_agent_treats_latest_audit_result_as_reviewable_history(self):
+        system_content = build_agent_system_content(
+            {"promptContent": "检查报告"},
+            {"latestAuditResult": "审核结论：不通过", "document": {}},
+        )
+
+        self.assertIn("只是系统已保存的历史审核记录", system_content)
+        self.assertIn("独立核对当前报告", system_content)
+        self.assertIn("系统已保存结论", system_content)
+        self.assertIn("通过重新审核产生正式新结论", system_content)
 
     def test_chat_completions_url_accepts_base_or_full_url(self):
         self.assertEqual(
@@ -522,10 +563,10 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(request.full_url, "https://shared-config.test/v1/chat/completions")
         self.assertEqual(request.get_header("Authorization"), "Bearer shared-config-secret")
         self.assertEqual(payload["model"], "shared-config-model")
-        self.assertIn("首行必须为“审核结论：通过”或“审核结论：不通过”", system_message)
+        self.assertIn("最后一行必须且只能是“审核结论：通过”或“审核结论：不通过”", system_message)
         self.assertIn("JIRA标题", system_message)
         self.assertIn("不超过15个中文字符", system_message)
-        self.assertIn("后续使用中文 Markdown", system_message)
+        self.assertIn("先使用中文 Markdown", system_message)
         self.assertIn("不要输出 JSON", system_message)
         self.assertNotIn("检查点", user_message)
         self.assertEqual(result["conclusion"], "passed")
