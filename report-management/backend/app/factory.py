@@ -14,6 +14,7 @@ from .routes.audit_prompts import audit_prompts
 from .routes.audit_checkpoints import audit_checkpoints
 from .routes.audits import audits
 from .routes.health import health
+from .routes.mock_jira import mock_jira
 from .routes.reports import reports
 from .routes.versions import versions
 
@@ -46,6 +47,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         app.config["AUDIT_REPOSITORY"] = app.config["REPORT_REPOSITORY"]
 
     app.register_blueprint(health)
+    app.register_blueprint(mock_jira)
     app.register_blueprint(reports)
     app.register_blueprint(versions)
     app.register_blueprint(audits)
