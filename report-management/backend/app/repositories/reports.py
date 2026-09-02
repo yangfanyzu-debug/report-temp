@@ -405,7 +405,15 @@ class MySqlReportRepository:
                     """
                     SELECT report.id, report.systemId, report.title, report.report_month,
                            report.finalized_at,
-                           COALESCE(MAX(version.version_no), 0) AS latest_version_no
+                           COALESCE(MAX(version.version_no), 0) AS latest_version_no,
+                           (
+                               SELECT initial_version.audit_status
+                                 FROM capability_report_version initial_version
+                                WHERE initial_version.report_id = report.id
+                                  AND initial_version.version_type = 'initial'
+                                ORDER BY initial_version.version_no DESC
+                                LIMIT 1
+                           ) AS initial_audit_status
                       FROM capability_report_log report
                       LEFT JOIN capability_report_version version ON version.report_id = report.id
                      WHERE report.id = %s
@@ -424,6 +432,7 @@ class MySqlReportRepository:
             "reportMonth": row["report_month"],
             "nextVersionNo": int(row["latest_version_no"]) + 1,
             "isFinalized": row["finalized_at"] is not None,
+            "initialAuditStatus": row["initial_audit_status"],
         }
 
     def create_uploaded_version(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -438,6 +447,22 @@ class MySqlReportRepository:
                     raise ReportNotReadyError("未找到该报告", "REPORT_NOT_FOUND")
                 if report["finalized_at"] is not None:
                     raise ReportFinalizedError()
+                cursor.execute(
+                    """
+                    SELECT audit_status
+                      FROM capability_report_version
+                     WHERE report_id = %s
+                       AND version_type = 'initial'
+                     ORDER BY version_no DESC
+                     LIMIT 1
+                    """,
+                    [payload["reportId"]],
+                )
+                initial_version = cursor.fetchone()
+                if initial_version is None or initial_version["audit_status"] != "passed":
+                    raise ReportNotReadyError(
+                        "初审通过后才能上传修订版本", "INITIAL_AUDIT_NOT_PASSED"
+                    )
                 cursor.execute(
                     """
                     SELECT COALESCE(MAX(version_no), 0) AS latest_version_no
@@ -500,7 +525,7 @@ class MySqlReportRepository:
                     }
                 cursor.execute(
                     """
-                    SELECT id, version_no, audit_status
+                    SELECT id, version_no, version_type, audit_status
                       FROM capability_report_version
                      WHERE report_id = %s
                      ORDER BY version_no DESC
@@ -509,9 +534,15 @@ class MySqlReportRepository:
                     [report_id],
                 )
                 latest_version = cursor.fetchone()
-                if latest_version is None or latest_version["audit_status"] != "passed":
+                if latest_version is None or latest_version["version_type"] != "uploaded":
                     raise ReportNotReadyError(
-                        "只有最新版本AI审核通过后才能确认定稿", "REPORT_NOT_READY"
+                        "至少上传一个修订版本并通过AI审核后才能确认定稿",
+                        "REVISION_REQUIRED",
+                    )
+                if latest_version["audit_status"] != "passed":
+                    raise ReportNotReadyError(
+                        "最新修订版本AI审核通过后才能确认定稿",
+                        "REVISION_AUDIT_NOT_PASSED",
                     )
                 cursor.execute(
                     """

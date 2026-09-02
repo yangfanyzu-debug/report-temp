@@ -167,6 +167,13 @@ def upload_report_version(report_id: int):
         return jsonify(
             {"message": "报告已定稿，不能继续新增版本", "code": "REPORT_FINALIZED"}
         ), 409
+    if context.get("initialAuditStatus") != "passed":
+        return jsonify(
+            {
+                "message": "初审通过后才能上传修订版本",
+                "code": "INITIAL_AUDIT_NOT_PASSED",
+            }
+        ), 409
 
     try:
         original_filename = validate_docx_filename(uploaded.filename)

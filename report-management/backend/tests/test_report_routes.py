@@ -33,10 +33,16 @@ class RecordingCursor:
         version_type: str = "uploaded",
         latest_audit: dict[str, Any] | None = None,
         latest_version_no: int = 2,
+        initial_audit_status: str = "passed",
+        latest_version_type: str = "uploaded",
+        latest_version_audit_status: str = "passed",
     ):
         self.version_type = version_type
         self.latest_audit = latest_audit
         self.latest_version_no = latest_version_no
+        self.initial_audit_status = initial_audit_status
+        self.latest_version_type = latest_version_type
+        self.latest_version_audit_status = latest_version_audit_status
         self.executions: list[tuple[str, list[Any]]] = []
         self.last_sql = ""
         self.lastrowid = 0
@@ -58,6 +64,13 @@ class RecordingCursor:
             self.lastrowid = 88 if self.lastrowid == 9 else 101
 
     def fetchone(self):
+        if "SELECT id, final_version_id, finalized_at, finalized_by" in self.last_sql:
+            return {
+                "id": 1,
+                "final_version_id": None,
+                "finalized_at": None,
+                "finalized_by": None,
+            }
         if "SELECT id, finalized_at, jira_id, jira_status" in self.last_sql:
             return {
                 "id": 1,
@@ -71,6 +84,15 @@ class RecordingCursor:
             return None
         if "SELECT finalized_at FROM capability_report_log" in self.last_sql:
             return {"finalized_at": None}
+        if "SELECT audit_status FROM capability_report_version" in self.last_sql:
+            return {"audit_status": self.initial_audit_status}
+        if "SELECT id, version_no, version_type, audit_status" in self.last_sql:
+            return {
+                "id": 11,
+                "version_no": self.latest_version_no,
+                "version_type": self.latest_version_type,
+                "audit_status": self.latest_version_audit_status,
+            }
         if "SELECT COALESCE(MAX(version_no), 0) AS latest_version_no" in self.last_sql:
             return {"latest_version_no": self.latest_version_no}
         if "FROM capability_report_version version" in self.last_sql:
@@ -273,6 +295,7 @@ class FakeReportRepository:
         }
         self.finalized_report_ids = []
         self.upload_context_finalized = False
+        self.upload_context_initial_audit_status = "passed"
         self.upload_error = None
         self.register_created = True
 
@@ -333,6 +356,7 @@ class FakeReportRepository:
             "reportMonth": "2025年08月",
             "nextVersionNo": 3,
             "isFinalized": self.upload_context_finalized,
+            "initialAuditStatus": self.upload_context_initial_audit_status,
         }
 
     def create_uploaded_version(self, payload):
@@ -738,6 +762,23 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json["code"], "REPORT_FINALIZED")
 
+    def test_upload_report_version_rejects_report_before_initial_audit_passes(self):
+        self.repository.upload_context_initial_audit_status = "failed"
+
+        response = self.client.post(
+            "/api/report-management/reports/1/versions",
+            data={"file": (make_docx(), "报告.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json["code"], "INITIAL_AUDIT_NOT_PASSED")
+        self.assertIsNone(self.repository.created_upload_payload)
+        self.assertEqual(
+            sorted(path.name for path in Path(self.storage.name).iterdir()),
+            ["preview.docx"],
+        )
+
     def test_upload_report_version_removes_file_after_repository_error(self):
         self.repository.upload_error = RuntimeError("数据库不可用")
 
@@ -915,6 +956,55 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertLess(report_lock_index, version_query_index)
         self.assertEqual(version_insert[1][1], 5)
         self.assertEqual(result["versionNo"], 5)
+
+    def test_repository_rejects_uploaded_version_when_initial_audit_failed(self):
+        from app.repositories.reports import MySqlReportRepository, ReportNotReadyError
+
+        cursor = RecordingCursor(initial_audit_status="failed")
+
+        with self.assertRaises(ReportNotReadyError) as raised:
+            MySqlReportRepository(RecordingDatabase(cursor)).create_uploaded_version(
+                {
+                    "reportId": 1,
+                    "fileName": "revision.docx",
+                    "filePath": "/tmp/revision.docx",
+                    "fileSize": 200,
+                    "uploader": "张三",
+                }
+            )
+
+        self.assertEqual(raised.exception.code, "INITIAL_AUDIT_NOT_PASSED")
+        self.assertFalse(
+            any(
+                sql.startswith("INSERT INTO capability_report_version")
+                for sql, _ in cursor.executions
+            )
+        )
+
+    def test_repository_finalization_requires_passed_uploaded_version(self):
+        from app.repositories.reports import MySqlReportRepository, ReportNotReadyError
+
+        cases = [
+            ("initial", "passed", "REVISION_REQUIRED"),
+            ("uploaded", "failed", "REVISION_AUDIT_NOT_PASSED"),
+        ]
+        for version_type, audit_status, expected_code in cases:
+            with self.subTest(version_type=version_type, audit_status=audit_status):
+                cursor = RecordingCursor(
+                    latest_version_type=version_type,
+                    latest_version_audit_status=audit_status,
+                )
+                with self.assertRaises(ReportNotReadyError) as raised:
+                    MySqlReportRepository(RecordingDatabase(cursor)).finalize_report(
+                        1, "张三"
+                    )
+                self.assertEqual(raised.exception.code, expected_code)
+                self.assertFalse(
+                    any(
+                        sql.startswith("UPDATE capability_report_log")
+                        for sql, _ in cursor.executions
+                    )
+                )
 
     def test_report_repository_rejects_unknown_audit_type(self):
         from app.repositories.reports import MySqlReportRepository
