@@ -131,6 +131,46 @@ class MySqlReportRepository:
                   WHERE inner_audit.version_id = latest_version.id
              )
         """
+        initial_version_join = """
+            LEFT JOIN capability_report_version initial_version
+              ON initial_version.report_id = report.id
+             AND initial_version.version_type = 'initial'
+             AND initial_version.version_no = (
+                 SELECT MAX(inner_initial.version_no)
+                   FROM capability_report_version inner_initial
+                  WHERE inner_initial.report_id = report.id
+                    AND inner_initial.version_type = 'initial'
+             )
+        """
+        initial_audit_join = """
+            LEFT JOIN capability_report_audit initial_audit
+              ON initial_audit.version_id = initial_version.id
+             AND initial_audit.create_time = (
+                 SELECT MAX(inner_initial_audit.create_time)
+                   FROM capability_report_audit inner_initial_audit
+                  WHERE inner_initial_audit.version_id = initial_version.id
+             )
+        """
+        revision_version_join = """
+            LEFT JOIN capability_report_version revision_version
+              ON revision_version.report_id = report.id
+             AND revision_version.version_type = 'uploaded'
+             AND revision_version.version_no = (
+                 SELECT MAX(inner_revision.version_no)
+                   FROM capability_report_version inner_revision
+                  WHERE inner_revision.report_id = report.id
+                    AND inner_revision.version_type = 'uploaded'
+             )
+        """
+        revision_audit_join = """
+            LEFT JOIN capability_report_audit revision_audit
+              ON revision_audit.version_id = revision_version.id
+             AND revision_audit.create_time = (
+                 SELECT MAX(inner_revision_audit.create_time)
+                   FROM capability_report_audit inner_revision_audit
+                  WHERE inner_revision_audit.version_id = revision_version.id
+             )
+        """
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(f"SELECT COUNT(*) AS total FROM capability_report_log report {latest_version_join} {where}", params)
@@ -160,10 +200,20 @@ class MySqlReportRepository:
                       latest_audit.summary AS latest_audit_summary,
                       latest_audit.result_text AS latest_audit_result_text,
                       latest_audit.conclusion AS latest_audit_conclusion,
-                      latest_audit.error_message AS latest_audit_error_message
+                      latest_audit.error_message AS latest_audit_error_message,
+                      initial_version.id AS initial_version_id,
+                      initial_version.audit_status AS initial_audit_status,
+                      initial_audit.id AS initial_audit_id,
+                      revision_version.id AS revision_version_id,
+                      revision_version.audit_status AS revision_audit_status,
+                      revision_audit.id AS revision_audit_id
                     FROM capability_report_log report
                     {latest_version_join}
                     {latest_audit_join}
+                    {initial_version_join}
+                    {initial_audit_join}
+                    {revision_version_join}
+                    {revision_audit_join}
                     {where}
                     ORDER BY report.create_time DESC, report.id DESC
                     LIMIT %s OFFSET %s
@@ -591,6 +641,20 @@ class MySqlReportRepository:
             "latestAuditStatus": row["latest_audit_status"] or "pending",
             "latestAuditConclusion": self._audit_conclusion(row),
             "latestAuditSuggestion": self._audit_suggestion(row),
+            "initialVersionId": row.get("initial_version_id"),
+            "initialAuditId": row.get("initial_audit_id"),
+            "initialAuditStatus": (
+                row.get("initial_audit_status") or "pending"
+                if row.get("initial_version_id")
+                else None
+            ),
+            "revisionVersionId": row.get("revision_version_id"),
+            "revisionAuditId": row.get("revision_audit_id"),
+            "revisionAuditStatus": (
+                row.get("revision_audit_status") or "pending"
+                if row.get("revision_version_id")
+                else None
+            ),
             "createTime": _format_time(row["create_time"]),
         }
 

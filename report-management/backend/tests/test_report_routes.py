@@ -296,6 +296,12 @@ class FakeReportRepository:
                     "latestAuditStatus": "failed",
                     "latestAuditConclusion": "不通过",
                     "latestAuditSuggestion": "请修正ES服务器数量",
+                    "initialVersionId": 9,
+                    "initialAuditId": 88,
+                    "initialAuditStatus": "passed",
+                    "revisionVersionId": 10,
+                    "revisionAuditId": 99,
+                    "revisionAuditStatus": "failed",
                     "createTime": "2026-08-11 10:30:00",
                 }
             ],
@@ -474,6 +480,8 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(response.json["total"], 1)
         self.assertEqual(response.json["rows"][0]["jiraId"], "JIRA-10086")
         self.assertEqual(response.json["rows"][0]["latestAuditConclusion"], "不通过")
+        self.assertEqual(response.json["rows"][0]["initialAuditStatus"], "passed")
+        self.assertEqual(response.json["rows"][0]["revisionAuditStatus"], "failed")
         self.assertEqual(
             self.repository.last_filters,
             {
@@ -492,6 +500,48 @@ class ReportRoutesTest(unittest.TestCase):
 
         self.assertIn("audit_status IN ('pending', 'running')", where)
         self.assertEqual(params, [])
+
+    def test_report_row_separates_initial_and_revision_audit_status(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        row = {
+            "id": 1,
+            "systemId": "credit-card-center",
+            "title": "容量报告",
+            "report_month": "2026年08月",
+            "jira_id": "",
+            "jira_status": "not_created",
+            "jira_error": None,
+            "final_version_id": None,
+            "finalized_at": None,
+            "finalized_by": None,
+            "latest_version_id": 9,
+            "latest_version_no": 1,
+            "latest_version_type": "initial",
+            "latest_version_uploader": "批次任务",
+            "latest_version_create_time": None,
+            "latest_audit_id": 88,
+            "latest_audit_type": "initial",
+            "latest_audit_status": "passed",
+            "latest_audit_summary": None,
+            "latest_audit_result_text": "审核结论：通过",
+            "latest_audit_conclusion": "passed",
+            "latest_audit_error_message": None,
+            "initial_version_id": 9,
+            "initial_audit_id": 88,
+            "initial_audit_status": "passed",
+            "revision_version_id": None,
+            "revision_audit_id": None,
+            "revision_audit_status": None,
+            "create_time": None,
+        }
+
+        result = MySqlReportRepository(None)._to_report_row(row)
+
+        self.assertEqual(result["initialAuditStatus"], "passed")
+        self.assertEqual(result["initialAuditId"], 88)
+        self.assertIsNone(result["revisionAuditStatus"])
+        self.assertIsNone(result["revisionAuditId"])
 
     def test_get_report_detail(self):
         response = self.client.get("/api/report-management/reports/1")
