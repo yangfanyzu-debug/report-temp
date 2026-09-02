@@ -188,6 +188,15 @@ class JiraWorkerTest(unittest.TestCase):
 
         self.assertEqual(title, "信用卡中心容量审核通过")
 
+    def test_extracts_ai_generated_title_after_long_audit_result(self):
+        title = _extract_jira_title(
+            "## 审核总结\n" + "报告内容正常。" * 100 + "\n"
+            "JIRA标题：容量报告初审通过\n"
+            "审核结论：通过"
+        )
+
+        self.assertEqual(title, "容量报告初审通过")
+
     @patch("app.services.jira_client.urllib.request.urlopen")
     def test_client_uses_api_default_when_ai_title_is_missing(self, urlopen):
         urlopen.return_value = io.BytesIO(

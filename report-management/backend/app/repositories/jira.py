@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import re
 from contextlib import contextmanager
 from typing import Any, Iterator
 
 from ..database import Database
+from ..services.audit_result import extract_jira_title
 
 
 class MySqlJiraRepository:
@@ -122,10 +122,4 @@ class MySqlJiraRepository:
 
 
 def _extract_jira_title(result_text: Any) -> str:
-    match = re.search(
-        r"JIRA标题\s*[：:]\s*([^\r\n]+)", str(result_text or "")[:500], re.IGNORECASE
-    )
-    if not match:
-        return ""
-    title = re.sub(r"^[`*_#\s]+|[`*_#\s]+$", "", match.group(1)).strip()
-    return title[:15]
+    return extract_jira_title(result_text)

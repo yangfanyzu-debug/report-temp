@@ -7,6 +7,7 @@ import urllib.request
 from typing import Any, Callable, Iterable
 
 from ..config import Settings
+from .audit_result import extract_jira_title
 
 
 class DeepSeekNotConfigured(RuntimeError):
@@ -197,13 +198,5 @@ def parse_model_result(content: str) -> dict[str, str]:
         if matches
         else "completed"
     )
-    title_matches = re.findall(
-        r"(?m)^\s*JIRA标题\s*[：:]\s*([^\r\n]+)\s*$", cleaned, re.IGNORECASE
-    )
-    jira_title = _normalize_jira_title(title_matches[-1]) if title_matches else ""
+    jira_title = extract_jira_title(cleaned)
     return {"resultText": cleaned, "conclusion": conclusion, "jiraTitle": jira_title}
-
-
-def _normalize_jira_title(value: str) -> str:
-    title = re.sub(r"^[`*_#\s]+|[`*_#\s]+$", "", value).strip("，。；;：:")
-    return title[:15]
