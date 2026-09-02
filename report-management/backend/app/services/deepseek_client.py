@@ -191,12 +191,12 @@ def parse_model_result(content: str) -> dict[str, str]:
     if not cleaned:
         raise ValueError("模型输出为空")
     matches = re.findall(
-        r"(?m)^\s*审核结论\s*[：:]\s*(不通过|通过)\s*$", cleaned
+        r"(?m)^\s*(?:\*\*|__)?审核结论(?:\*\*|__)?\s*[：:]\s*"
+        r"(不通过|通过)(?:\*\*|__)?[。.]*\s*$",
+        cleaned,
     )
-    conclusion = (
-        {"通过": "passed", "不通过": "failed"}.get(matches[-1], "completed")
-        if matches
-        else "completed"
-    )
+    if not matches:
+        raise ValueError("模型输出缺少规范审核结论")
+    conclusion = {"通过": "passed", "不通过": "failed"}[matches[-1]]
     jira_title = extract_jira_title(cleaned)
     return {"resultText": cleaned, "conclusion": conclusion, "jiraTitle": jira_title}

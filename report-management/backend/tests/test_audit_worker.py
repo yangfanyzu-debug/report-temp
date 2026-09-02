@@ -210,10 +210,14 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(audit_input["document"]["tocEntries"], [])
         self.assertNotIn("checkpoints", audit_input)
 
-    def test_parse_model_result_extracts_optional_conclusion(self):
+    def test_parse_model_result_extracts_conclusion(self):
         self.assertEqual(parse_model_result("审核结论：通过\n内容完整")["conclusion"], "passed")
         self.assertEqual(parse_model_result("审核结论：不通过\n存在问题")["conclusion"], "failed")
-        self.assertEqual(parse_model_result("审核工作已经完成")["conclusion"], "completed")
+        self.assertEqual(parse_model_result("**审核结论：通过**。")["conclusion"], "passed")
+
+    def test_parse_model_result_rejects_missing_conclusion(self):
+        with self.assertRaisesRegex(ValueError, "缺少规范审核结论"):
+            parse_model_result("审核工作已经完成")
 
     def test_parse_model_result_uses_last_standalone_conclusion(self):
         result = parse_model_result(
