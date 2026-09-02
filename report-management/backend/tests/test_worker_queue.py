@@ -45,6 +45,14 @@ class WorkerQueueTest(unittest.TestCase):
         self.assertIn("audit.status = 'running'", source)
         self.assertIn("capability_report_version SET audit_status = 'running'", source)
 
+    def test_worker_main_logs_unhandled_cycle_errors(self):
+        from run_worker import main
+
+        source = inspect.getsource(main)
+
+        self.assertIn('logger.exception("worker_cycle_failed")', source)
+        self.assertIn("time.sleep(settings.worker_interval_seconds)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

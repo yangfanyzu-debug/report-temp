@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, current_app, jsonify, request
 
 
 audit_prompts = Blueprint("audit_prompts", __name__, url_prefix="/api/report-management/audit-prompts")
 VALID_AUDIT_TYPES = {"initial", "revision"}
+logger = logging.getLogger(__name__)
 
 
 def _repository():
@@ -71,7 +74,14 @@ def _create_prompt_version(audit_type: str, deprecated: bool = False):
     try:
         prompt = _repository().create_prompt_version(audit_type, payload)
     except Exception:
+        logger.exception("audit_prompt_save_failed auditType=%s", audit_type)
         return _response({"message": "保存审核提示词失败"}, 500, deprecated)
+    logger.info(
+        "audit_prompt_published promptId=%s auditType=%s version=%s",
+        prompt.get("id"),
+        audit_type,
+        prompt.get("version"),
+    )
     return _response(_public_prompt(prompt), 201, deprecated)
 
 

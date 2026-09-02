@@ -25,6 +25,15 @@ class AuditWorker:
         if job is None:
             return {"processed": False, "reason": "no_pending_audit"}
 
+        started_at = monotonic()
+        logger.info(
+            "audit_claimed reportId=%s versionId=%s auditId=%s auditType=%s fileName=%s",
+            job.get("reportId"),
+            job.get("versionId"),
+            job.get("auditId"),
+            job.get("auditType"),
+            job.get("fileName"),
+        )
         try:
             model_config = self.repository.get_ai_config()
             required_config_fields = ("apiUrl", "modelName", "apiKey")
@@ -57,6 +66,12 @@ class AuditWorker:
             audit_input.pop("checkpoints", None)
             paragraph_count = len(audit_input["document"].get("paragraphs", []))
             table_count = len(audit_input["document"].get("tables", []))
+            logger.info(
+                "audit_document_extracted auditId=%s paragraphs=%s tables=%s",
+                job["auditId"],
+                paragraph_count,
+                table_count,
+            )
             self.repository.append_audit_event(
                 job["auditId"],
                 "system",
@@ -90,6 +105,13 @@ class AuditWorker:
             result = self.model_client.audit_report(
                 model_config, runtime_prompt, audit_input, on_delta=handle_delta
             )
+            logger.info(
+                "audit_model_completed auditId=%s model=%s conclusion=%s durationMs=%s",
+                job["auditId"],
+                model_config["modelName"],
+                result["conclusion"],
+                int((monotonic() - started_at) * 1000),
+            )
             if pending_chunks:
                 self.repository.append_audit_event(
                     job["auditId"], "model", "streaming", "".join(pending_chunks)
@@ -97,24 +119,52 @@ class AuditWorker:
             self.repository.append_audit_event(job["auditId"], "system", "saving", "模型输出完成，正在保存审核结果")
             self.repository.mark_audit_complete(job["auditId"], job["versionId"], result)
             if audit_type == "initial" and result["conclusion"] == "passed":
-                self.repository.queue_jira_creation(
+                jira_queued = self.repository.queue_jira_creation(
                     job["reportId"], job["versionId"], job["auditId"]
+                )
+                logger.info(
+                    "jira_queue_requested reportId=%s versionId=%s auditId=%s queued=%s",
+                    job["reportId"],
+                    job["versionId"],
+                    job["auditId"],
+                    jira_queued,
                 )
             conclusion = {"passed": "通过", "failed": "不通过", "completed": "已完成"}.get(result["conclusion"], "已完成")
             self.repository.append_audit_event(job["auditId"], "result", "completed", f"AI审核完成：{conclusion}")
+            logger.info(
+                "audit_completed reportId=%s versionId=%s auditId=%s auditType=%s status=%s durationMs=%s",
+                job["reportId"],
+                job["versionId"],
+                job["auditId"],
+                audit_type,
+                result["conclusion"],
+                int((monotonic() - started_at) * 1000),
+            )
             return {"processed": True, "auditId": job["auditId"], "status": "completed"}
         except Exception as error:
-            return self._handle_error(job, error)
+            return self._handle_error(job, error, started_at)
 
-    def _handle_error(self, job: dict[str, Any], error: Exception) -> dict[str, Any]:
+    def _handle_error(
+        self, job: dict[str, Any], error: Exception, started_at: float
+    ) -> dict[str, Any]:
         message = str(error) or error.__class__.__name__
         phase = "configuration" if isinstance(error, AuditConfigurationError) else "failed"
+        logger.exception(
+            "audit_failed reportId=%s versionId=%s auditId=%s auditType=%s phase=%s durationMs=%s error=%s",
+            job.get("reportId"),
+            job.get("versionId"),
+            job.get("auditId"),
+            job.get("auditType"),
+            phase,
+            int((monotonic() - started_at) * 1000),
+            message,
+        )
 
         try:
             self.repository.mark_audit_error(job["auditId"], job["versionId"], message)
         except Exception:
             logger.exception(
-                "记录审核错误状态失败 auditId=%s，原始错误：%s",
+                "audit_error_persistence_failed auditId=%s originalError=%s",
                 job["auditId"],
                 message,
             )
@@ -124,7 +174,7 @@ class AuditWorker:
             )
         except Exception:
             logger.exception(
-                "记录审核错误事件失败 auditId=%s，原始错误：%s",
+                "audit_error_event_failed auditId=%s originalError=%s",
                 job["auditId"],
                 message,
             )

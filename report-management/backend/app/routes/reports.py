@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify, request
@@ -10,6 +11,7 @@ from ..services.file_storage import save_uploaded_docx, validate_docx_filename
 
 
 reports = Blueprint("reports", __name__, url_prefix="/api/report-management/reports")
+logger = logging.getLogger(__name__)
 
 
 def _positive_integer(value: str | None, default: int, maximum: int | None = None) -> int:
@@ -68,6 +70,15 @@ def register_initial_report():
             "source": payload.get("source", "batch"),
         }
     )
+    logger.info(
+        "report_registered transport=path generationId=%s systemId=%s reportId=%s versionId=%s auditId=%s created=%s",
+        payload["generationId"].strip(),
+        payload["systemId"].strip(),
+        result.get("reportId"),
+        result.get("versionId"),
+        result.get("auditId"),
+        result.get("created", True),
+    )
     return jsonify(result), 201 if result.get("created", True) else 200
 
 
@@ -104,6 +115,7 @@ def upload_and_register_initial_report():
         )
     except ValueError as error:
         return jsonify({"message": str(error)}), 400
+    uploaded_file_size = saved_path.stat().st_size
 
     try:
         result = _repository().register_initial_report(
@@ -113,16 +125,32 @@ def upload_and_register_initial_report():
                 "reportMonth": report_month,
                 "filePath": str(saved_path),
                 "fileName": original_filename,
-                "fileSize": saved_path.stat().st_size,
+                "fileSize": uploaded_file_size,
                 "generationId": request.form["generationId"].strip(),
                 "source": request.form.get("source", "batch").strip() or "batch",
             }
         )
     except Exception:
+        logger.exception(
+            "report_registration_failed transport=upload generationId=%s systemId=%s fileName=%s",
+            request.form["generationId"].strip(),
+            system_id,
+            original_filename,
+        )
         saved_path.unlink(missing_ok=True)
         raise
     if not result.get("created", True):
         saved_path.unlink(missing_ok=True)
+    logger.info(
+        "report_registered transport=upload generationId=%s systemId=%s reportId=%s versionId=%s auditId=%s created=%s fileSize=%s",
+        request.form["generationId"].strip(),
+        system_id,
+        result.get("reportId"),
+        result.get("versionId"),
+        result.get("auditId"),
+        result.get("created", True),
+        uploaded_file_size,
+    )
     return jsonify(result), 201 if result.get("created", True) else 200
 
 
@@ -169,8 +197,21 @@ def upload_report_version(report_id: int):
             }
         )
     except Exception:
+        logger.exception(
+            "report_version_upload_failed reportId=%s fileName=%s",
+            report_id,
+            original_filename,
+        )
         saved_path.unlink(missing_ok=True)
         raise
+    logger.info(
+        "report_version_uploaded reportId=%s versionId=%s versionNo=%s auditId=%s fileSize=%s",
+        report_id,
+        result.get("versionId"),
+        result.get("versionNo"),
+        result.get("auditId"),
+        saved_path.stat().st_size,
+    )
     return jsonify(result), 201
 
 
@@ -181,9 +222,22 @@ def finalize_report(report_id: int):
     result = _repository().finalize_report(report_id, operator)
     if result is None:
         return jsonify({"message": "未找到该报告"}), 404
+    logger.info(
+        "report_finalized reportId=%s finalVersionId=%s created=%s",
+        report_id,
+        result.get("finalVersionId"),
+        result.get("created"),
+    )
     return jsonify(result), 201 if result.get("created") else 200
 
 
 @reports.errorhandler(ReportWorkflowConflict)
 def handle_report_workflow_conflict(error: ReportWorkflowConflict):
+    logger.warning(
+        "report_workflow_conflict method=%s path=%s code=%s error=%s",
+        request.method,
+        request.path,
+        error.code,
+        str(error),
+    )
     return jsonify({"message": str(error), "code": error.code}), 409

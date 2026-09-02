@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from .audit_input import build_audit_input
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentWorker:
@@ -17,6 +21,14 @@ class AgentWorker:
         if job is None:
             return {"processed": False, "reason": "no_pending_agent_message"}
 
+        started_at = monotonic()
+        logger.info(
+            "agent_message_claimed reportId=%s versionId=%s messageId=%s auditType=%s",
+            job.get("reportId"),
+            job.get("versionId"),
+            job.get("messageId"),
+            job.get("auditType"),
+        )
         try:
             model_config = self.repository.get_ai_config()
             if not model_config or not all(
@@ -72,7 +84,23 @@ class AgentWorker:
             if pending_chunks:
                 self.repository.append_agent_message_content(job["messageId"], "".join(pending_chunks))
             self.repository.mark_agent_message_complete(job["messageId"])
+            logger.info(
+                "agent_message_completed reportId=%s versionId=%s messageId=%s model=%s durationMs=%s",
+                job.get("reportId"),
+                job.get("versionId"),
+                job["messageId"],
+                model_config["modelName"],
+                int((monotonic() - started_at) * 1000),
+            )
             return {"processed": True, "messageId": job["messageId"], "status": "completed"}
         except Exception as error:
+            logger.exception(
+                "agent_message_failed reportId=%s versionId=%s messageId=%s durationMs=%s error=%s",
+                job.get("reportId"),
+                job.get("versionId"),
+                job.get("messageId"),
+                int((monotonic() - started_at) * 1000),
+                str(error) or error.__class__.__name__,
+            )
             self.repository.mark_agent_message_error(job["messageId"], str(error))
             return {"processed": True, "messageId": job["messageId"], "status": "error"}

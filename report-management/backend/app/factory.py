@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+
 from flask import Flask, jsonify
 
 from .config import load_settings
 from .database import Database
+from .logging_config import configure_logging
 from .repositories.audits import MySqlAuditRepository
 from .repositories.reports import MySqlReportRepository
 from .routes.ai_config import ai_config
@@ -18,6 +21,8 @@ from .routes.versions import versions
 def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     settings = load_settings()
+    if not (test_config or {}).get("TESTING"):
+        configure_logging(settings.log_level)
     app.config.from_mapping(
         SETTINGS=settings,
         UPLOAD_DIR=str(settings.upload_dir),
@@ -27,6 +32,12 @@ def create_app(test_config: dict | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    if not app.testing:
+        app.logger.info(
+            "api_started port=%s logLevel=%s",
+            os.environ.get("REPORT_PORT", "8045"),
+            settings.log_level,
+        )
     if "REPORT_REPOSITORY" not in app.config:
         database = Database(settings)
         app.config["REPORT_REPOSITORY"] = MySqlReportRepository(database)

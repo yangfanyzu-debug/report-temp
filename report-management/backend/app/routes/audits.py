@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, current_app, jsonify, request
 
 
 audits = Blueprint("audits", __name__, url_prefix="/api/report-management/audits")
+logger = logging.getLogger(__name__)
 
 
 def _repository():
@@ -59,6 +62,15 @@ def retry_version_audit(report_id: int, version_id: int):
     result = _repository().retry_version_audit(report_id, version_id)
     if result is None:
         return jsonify({"message": "未找到该报告版本"}), 404
+    logger.info(
+        "audit_retry_requested reportId=%s versionId=%s auditId=%s auditType=%s created=%s status=%s",
+        report_id,
+        version_id,
+        result.get("auditId"),
+        result.get("auditType"),
+        result.get("created"),
+        result.get("auditStatus"),
+    )
     return jsonify(result), 202
 
 
@@ -90,4 +102,10 @@ def create_agent_message(report_id: int, version_id: int):
     result = _repository().create_agent_exchange(report_id, version_id, content)
     if result is None:
         return jsonify({"message": "未找到该报告版本"}), 404
+    logger.info(
+        "agent_message_queued reportId=%s versionId=%s messageId=%s",
+        report_id,
+        version_id,
+        result.get("assistantMessageId") or result.get("messageId"),
+    )
     return jsonify(result), 202

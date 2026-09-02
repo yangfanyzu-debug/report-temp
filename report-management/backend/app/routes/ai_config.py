@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, current_app, jsonify, request
 
 
 ai_config = Blueprint("ai_config", __name__, url_prefix="/api/report-management/ai-config")
+logger = logging.getLogger(__name__)
 
 
 def _repository():
@@ -54,6 +57,13 @@ def update_ai_config():
     payload, error = _config_payload(request.get_json(silent=True))
     if error:
         return jsonify({"message": error}), 400
-    response = jsonify(_public_config(_repository().update_ai_config(payload)))
+    config = _repository().update_ai_config(payload)
+    logger.info(
+        "ai_config_updated configId=%s model=%s apiKeyChanged=%s",
+        config.get("id"),
+        config.get("modelName"),
+        bool(payload.get("apiKey")),
+    )
+    response = jsonify(_public_config(config))
     response.headers["Cache-Control"] = "no-store"
     return response

@@ -265,7 +265,8 @@ class AuditWorkerTest(unittest.TestCase):
             repository = FakeAuditRepository(job, {"initial": prompt})
             model_client = FakeModelClient()
 
-            result = AuditWorker(repository, model_client).run_once()
+            with self.assertLogs("app.services.audit_worker", level="INFO") as captured:
+                result = AuditWorker(repository, model_client).run_once()
 
         self.assertEqual(result, {"processed": True, "auditId": 99, "status": "completed"})
         self.assertEqual(repository.execution_contexts, [(99, 2, "shared-model")])
@@ -280,6 +281,10 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertTrue(any(event[1] == "model" for event in repository.events))
         self.assertEqual(repository.events[-1][2], "completed")
         self.assertEqual(repository.jira_queues, [(1, 10, 99)])
+        audit_logs = "\n".join(captured.output)
+        self.assertIn("audit_completed reportId=1 versionId=10 auditId=99", audit_logs)
+        self.assertIn("jira_queue_requested reportId=1 versionId=10 auditId=99", audit_logs)
+        self.assertNotIn("shared-secret", audit_logs)
 
     def test_initial_pass_without_jira_title_still_queues_jira(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

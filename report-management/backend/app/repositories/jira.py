@@ -53,7 +53,7 @@ class MySqlJiraRepository:
                     """
                     SELECT report.id AS report_id, report.systemId, report.title,
                            report.report_month, report.jira_version_id, report.jira_audit_id,
-                           audit.result_text
+                           report.jira_attempts, audit.result_text
                       FROM capability_report_log report
                       JOIN capability_report_version version
                         ON version.id = report.jira_version_id
@@ -93,6 +93,7 @@ class MySqlJiraRepository:
             "reportMonth": row["report_month"],
             "auditResult": row["result_text"],
             "jiraTitle": _extract_jira_title(row["result_text"]),
+            "jiraAttempts": int(row["jira_attempts"]) + 1,
         }
 
     def mark_created(self, report_id: int, jira_id: str) -> None:
