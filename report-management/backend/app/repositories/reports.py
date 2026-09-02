@@ -106,6 +106,19 @@ def _audit_type_label(audit_type: str | None) -> str:
     )
 
 
+def _latest_audit_join_sql(audit_alias: str, version_alias: str) -> str:
+    return f"""
+        LEFT JOIN capability_report_audit {audit_alias}
+          ON {audit_alias}.id = (
+              SELECT inner_{audit_alias}.id
+                FROM capability_report_audit inner_{audit_alias}
+               WHERE inner_{audit_alias}.version_id = {version_alias}.id
+               ORDER BY inner_{audit_alias}.id DESC
+               LIMIT 1
+          )
+    """
+
+
 class MySqlReportRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -122,15 +135,7 @@ class MySqlReportRepository:
                   WHERE inner_version.report_id = report.id
              )
         """
-        latest_audit_join = """
-            LEFT JOIN capability_report_audit latest_audit
-              ON latest_audit.version_id = latest_version.id
-             AND latest_audit.create_time = (
-                 SELECT MAX(inner_audit.create_time)
-                   FROM capability_report_audit inner_audit
-                  WHERE inner_audit.version_id = latest_version.id
-             )
-        """
+        latest_audit_join = _latest_audit_join_sql("latest_audit", "latest_version")
         initial_version_join = """
             LEFT JOIN capability_report_version initial_version
               ON initial_version.report_id = report.id
@@ -142,15 +147,7 @@ class MySqlReportRepository:
                     AND inner_initial.version_type = 'initial'
              )
         """
-        initial_audit_join = """
-            LEFT JOIN capability_report_audit initial_audit
-              ON initial_audit.version_id = initial_version.id
-             AND initial_audit.create_time = (
-                 SELECT MAX(inner_initial_audit.create_time)
-                   FROM capability_report_audit inner_initial_audit
-                  WHERE inner_initial_audit.version_id = initial_version.id
-             )
-        """
+        initial_audit_join = _latest_audit_join_sql("initial_audit", "initial_version")
         revision_version_join = """
             LEFT JOIN capability_report_version revision_version
               ON revision_version.report_id = report.id
@@ -162,15 +159,7 @@ class MySqlReportRepository:
                     AND inner_revision.version_type = 'uploaded'
              )
         """
-        revision_audit_join = """
-            LEFT JOIN capability_report_audit revision_audit
-              ON revision_audit.version_id = revision_version.id
-             AND revision_audit.create_time = (
-                 SELECT MAX(inner_revision_audit.create_time)
-                   FROM capability_report_audit inner_revision_audit
-                  WHERE inner_revision_audit.version_id = revision_version.id
-             )
-        """
+        revision_audit_join = _latest_audit_join_sql("revision_audit", "revision_version")
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(f"SELECT COUNT(*) AS total FROM capability_report_log report {latest_version_join} {where}", params)
@@ -240,7 +229,7 @@ class MySqlReportRepository:
                 if report is None:
                     return None
                 cursor.execute(
-                    """
+                    f"""
                     SELECT
                       version.id,
                       version.version_no,
@@ -258,13 +247,7 @@ class MySqlReportRepository:
                       latest_audit.conclusion AS latest_audit_conclusion,
                       latest_audit.error_message AS latest_audit_error_message
                     FROM capability_report_version version
-                    LEFT JOIN capability_report_audit latest_audit
-                      ON latest_audit.version_id = version.id
-                     AND latest_audit.create_time = (
-                         SELECT MAX(inner_audit.create_time)
-                           FROM capability_report_audit inner_audit
-                          WHERE inner_audit.version_id = version.id
-                     )
+                    {_latest_audit_join_sql("latest_audit", "version")}
                     WHERE version.report_id = %s
                     ORDER BY version.version_no DESC
                     """,

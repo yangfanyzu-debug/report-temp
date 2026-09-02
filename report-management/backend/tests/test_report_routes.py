@@ -543,6 +543,15 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertIsNone(result["revisionAuditStatus"])
         self.assertIsNone(result["revisionAuditId"])
 
+    def test_latest_audit_join_uses_monotonic_id(self):
+        from app.repositories.reports import _latest_audit_join_sql
+
+        sql = " ".join(_latest_audit_join_sql("latest_audit", "version").split())
+
+        self.assertIn("latest_audit.id = (", sql)
+        self.assertIn("ORDER BY inner_latest_audit.id DESC LIMIT 1", sql)
+        self.assertNotIn("MAX(inner_latest_audit.create_time)", sql)
+
     def test_get_report_detail(self):
         response = self.client.get("/api/report-management/reports/1")
 
