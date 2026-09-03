@@ -363,6 +363,32 @@ class AuditWorkerTest(unittest.TestCase):
         self.assertEqual(repository.errors, [])
         self.assertEqual(repository.jira_queues, [(1, 10, 99)])
 
+    def test_batch_debug_mode_does_not_queue_jira(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = Path(temporary_dir) / "报告.docx"
+            write_docx(path)
+            repository = FakeAuditRepository(
+                {
+                    "auditId": 99,
+                    "reportId": 1,
+                    "versionId": 10,
+                    "auditType": "initial",
+                    "filePath": str(path),
+                    "fileName": "报告.docx",
+                    "systemId": "credit-card-center",
+                    "title": "报告",
+                    "reportMonth": "2026年08月",
+                },
+                {"initial": {"id": 1, "version": 1, "promptContent": "请审核"}},
+            )
+
+            result = AuditWorker(
+                repository, FakeModelClient(), jira_creation_enabled=False
+            ).run_once()
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(repository.jira_queues, [])
+
     def test_worker_handles_no_pending_audit(self):
         result = AuditWorker(FakeAuditRepository(), FakeModelClient()).run_once()
 

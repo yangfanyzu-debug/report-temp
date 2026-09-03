@@ -84,6 +84,14 @@ class FoundationTest(unittest.TestCase):
         ):
             self.assertTrue(load_settings().batch_debug_reregistration)
 
+    def test_mock_jira_endpoint_flag_defaults_off_and_accepts_true(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(load_settings().mock_jira_enabled)
+        with patch.dict(
+            "os.environ", {"REPORT_MOCK_JIRA_ENABLED": "true"}, clear=True
+        ):
+            self.assertTrue(load_settings().mock_jira_enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,11 +9,14 @@ logger = logging.getLogger(__name__)
 
 
 class JiraWorker:
-    def __init__(self, repository: Any, client: Any):
+    def __init__(self, repository: Any, client: Any, enabled: bool = True):
         self.repository = repository
         self.client = client
+        self.enabled = enabled
 
     def run_once(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"processed": False, "reason": "jira_disabled_in_batch_debug_mode"}
         if not self.client.configured:
             return {"processed": False, "reason": "jira_not_configured"}
         with self.repository.processing_lock() as acquired:

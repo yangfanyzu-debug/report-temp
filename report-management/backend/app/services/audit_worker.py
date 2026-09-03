@@ -16,9 +16,12 @@ class AuditConfigurationError(RuntimeError):
 
 
 class AuditWorker:
-    def __init__(self, repository: Any, model_client: Any):
+    def __init__(
+        self, repository: Any, model_client: Any, jira_creation_enabled: bool = True
+    ):
         self.repository = repository
         self.model_client = model_client
+        self.jira_creation_enabled = jira_creation_enabled
 
     def run_once(self) -> dict[str, Any]:
         job = self.repository.next_pending_audit()
@@ -118,7 +121,11 @@ class AuditWorker:
                 )
             self.repository.append_audit_event(job["auditId"], "system", "saving", "模型输出完成，正在保存审核结果")
             self.repository.mark_audit_complete(job["auditId"], job["versionId"], result)
-            if audit_type == "initial" and result["conclusion"] == "passed":
+            if (
+                self.jira_creation_enabled
+                and audit_type == "initial"
+                and result["conclusion"] == "passed"
+            ):
                 jira_queued = self.repository.queue_jira_creation(
                     job["reportId"], job["versionId"], job["auditId"]
                 )

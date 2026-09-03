@@ -24,15 +24,18 @@ class FakeWorker:
 
 
 class WorkerQueueTest(unittest.TestCase):
-    def test_audit_jobs_take_priority_and_skip_other_workers(self):
+    def test_each_cycle_services_all_worker_queues(self):
         audit = FakeWorker({"processed": True, "kind": "audit"})
         agent = FakeWorker({"processed": True, "kind": "agent"})
         jira = FakeWorker({"processed": True, "kind": "jira"})
 
         result = process_next(audit, agent, jira)
 
-        self.assertEqual(result["kind"], "audit")
-        self.assertEqual((audit.calls, agent.calls, jira.calls), (1, 0, 0))
+        self.assertTrue(result["processed"])
+        self.assertEqual(result["results"]["audit"]["kind"], "audit")
+        self.assertEqual(result["results"]["agent"]["kind"], "agent")
+        self.assertEqual(result["results"]["jira"]["kind"], "jira")
+        self.assertEqual((audit.calls, agent.calls, jira.calls), (1, 1, 1))
 
     def test_worker_waits_only_when_no_job_was_processed(self):
         self.assertFalse(should_wait({"processed": True}))

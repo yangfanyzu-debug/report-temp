@@ -28,6 +28,7 @@ class Settings:
     jira_create_url: str
     jira_timeout_seconds: int
     batch_debug_reregistration: bool
+    mock_jira_enabled: bool
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -63,4 +64,5 @@ def load_settings() -> Settings:
         jira_create_url=os.environ.get("REPORT_JIRA_CREATE_URL", "").strip(),
         jira_timeout_seconds=int(os.environ.get("REPORT_JIRA_TIMEOUT_SECONDS", "30")),
         batch_debug_reregistration=_env_flag("REPORT_BATCH_DEBUG_REREGISTRATION"),
+        mock_jira_enabled=_env_flag("REPORT_MOCK_JIRA_ENABLED"),
     )

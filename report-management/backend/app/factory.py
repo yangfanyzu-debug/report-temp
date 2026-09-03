@@ -30,6 +30,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         INITIAL_REPORT_DIR=str(settings.initial_report_dir),
         PUBLIC_API_PREFIX=settings.public_api_prefix,
         BATCH_DEBUG_REREGISTRATION=settings.batch_debug_reregistration,
+        MOCK_JIRA_ENABLED=settings.mock_jira_enabled,
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
     )
     if test_config:
@@ -48,7 +49,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         app.config["AUDIT_REPOSITORY"] = app.config["REPORT_REPOSITORY"]
 
     app.register_blueprint(health)
-    app.register_blueprint(mock_jira)
+    if app.testing or app.config["MOCK_JIRA_ENABLED"]:
+        app.register_blueprint(mock_jira)
     app.register_blueprint(reports)
     app.register_blueprint(versions)
     app.register_blueprint(audits)

@@ -94,6 +94,18 @@ class JiraWorkerTest(unittest.TestCase):
         self.assertIsNotNone(repository.job)
         self.assertEqual(repository.calls, [])
 
+    def test_worker_does_not_consume_jira_jobs_in_batch_debug_mode(self):
+        repository = FakeJiraRepository(self.job)
+
+        result = JiraWorker(repository, FakeJiraClient(), enabled=False).run_once()
+
+        self.assertEqual(
+            result,
+            {"processed": False, "reason": "jira_disabled_in_batch_debug_mode"},
+        )
+        self.assertIsNotNone(repository.job)
+        self.assertEqual(repository.calls, [])
+
     def test_worker_skips_recovery_and_claim_when_lock_is_busy(self):
         repository = FakeJiraRepository(self.job, lock_acquired=False)
 

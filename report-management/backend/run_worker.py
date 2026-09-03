@@ -20,11 +20,15 @@ logger = logging.getLogger("report_management.worker")
 
 
 def process_next(audit_worker, agent_worker, jira_worker):
-    audit_result = audit_worker.run_once()
-    if audit_result["processed"]:
-        return audit_result
-    agent_result = agent_worker.run_once()
-    return agent_result if agent_result["processed"] else jira_worker.run_once()
+    results = {
+        "audit": audit_worker.run_once(),
+        "agent": agent_worker.run_once(),
+        "jira": jira_worker.run_once(),
+    }
+    return {
+        "processed": any(result.get("processed", False) for result in results.values()),
+        "results": results,
+    }
 
 
 def should_wait(result: dict) -> bool:
@@ -33,7 +37,7 @@ def should_wait(result: dict) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run report AI audit worker")
-    parser.add_argument("--once", action="store_true", help="process one pending audit and exit")
+    parser.add_argument("--once", action="store_true", help="process one worker cycle and exit")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -42,12 +46,20 @@ def main() -> None:
     repository = MySqlAuditRepository(database)
     model_client = DeepSeekClient(settings)
     agent_worker = AgentWorker(repository, model_client)
-    audit_worker = AuditWorker(repository, model_client)
-    jira_worker = JiraWorker(MySqlJiraRepository(database), JiraClient(settings))
+    jira_creation_enabled = not settings.batch_debug_reregistration
+    audit_worker = AuditWorker(
+        repository, model_client, jira_creation_enabled=jira_creation_enabled
+    )
+    jira_worker = JiraWorker(
+        MySqlJiraRepository(database),
+        JiraClient(settings),
+        enabled=jira_creation_enabled,
+    )
     logger.info(
-        "worker_started intervalSeconds=%s jiraConfigured=%s logLevel=%s",
+        "worker_started intervalSeconds=%s jiraConfigured=%s jiraEnabled=%s logLevel=%s",
         settings.worker_interval_seconds,
         jira_worker.client.configured,
+        jira_creation_enabled,
         settings.log_level,
     )
 

@@ -70,6 +70,21 @@ class MockJiraRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["retCode"], 400)
 
+    def test_mock_route_is_not_registered_without_explicit_enablement(self):
+        app = create_app(
+            {
+                "REPORT_REPOSITORY": object(),
+                "AUDIT_REPOSITORY": object(),
+                "MOCK_JIRA_ENABLED": False,
+            }
+        )
+
+        response = app.test_client().post(
+            "/api/report-management/mock/jira", json={"systemId": "LMP"}
+        )
+
+        self.assertEqual(response.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
