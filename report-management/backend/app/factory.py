@@ -29,6 +29,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         UPLOAD_DIR=str(settings.upload_dir),
         INITIAL_REPORT_DIR=str(settings.initial_report_dir),
         PUBLIC_API_PREFIX=settings.public_api_prefix,
+        BATCH_DEBUG_REREGISTRATION=settings.batch_debug_reregistration,
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
     )
     if test_config:

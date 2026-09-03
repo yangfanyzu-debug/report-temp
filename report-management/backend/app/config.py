@@ -27,6 +27,14 @@ class Settings:
     worker_interval_seconds: int
     jira_create_url: str
     jira_timeout_seconds: int
+    batch_debug_reregistration: bool
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> Settings:
@@ -54,4 +62,5 @@ def load_settings() -> Settings:
         worker_interval_seconds=int(os.environ.get("REPORT_WORKER_INTERVAL_SECONDS", "15")),
         jira_create_url=os.environ.get("REPORT_JIRA_CREATE_URL", "").strip(),
         jira_timeout_seconds=int(os.environ.get("REPORT_JIRA_TIMEOUT_SECONDS", "30")),
+        batch_debug_reregistration=_env_flag("REPORT_BATCH_DEBUG_REREGISTRATION"),
     )

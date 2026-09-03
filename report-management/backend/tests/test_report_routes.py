@@ -36,6 +36,8 @@ class RecordingCursor:
         initial_audit_status: str = "passed",
         latest_version_type: str = "uploaded",
         latest_version_audit_status: str = "passed",
+        latest_report_version: dict[str, Any] | None = None,
+        existing_generation: dict[str, Any] | None = None,
     ):
         self.version_type = version_type
         self.latest_audit = latest_audit
@@ -43,6 +45,8 @@ class RecordingCursor:
         self.initial_audit_status = initial_audit_status
         self.latest_version_type = latest_version_type
         self.latest_version_audit_status = latest_version_audit_status
+        self.latest_report_version = latest_report_version
+        self.existing_generation = existing_generation
         self.executions: list[tuple[str, list[Any]]] = []
         self.last_sql = ""
         self.lastrowid = 0
@@ -79,9 +83,9 @@ class RecordingCursor:
                 "jira_status": "not_created",
             }
         if "version.generation_id" in self.last_sql:
-            return None
-        if "SELECT id, version_no, source, audit_status" in self.last_sql:
-            return None
+            return self.existing_generation
+        if "version.source" in self.last_sql and "latest_audit.id AS audit_id" in self.last_sql:
+            return self.latest_report_version
         if "SELECT finalized_at FROM capability_report_log" in self.last_sql:
             return {"finalized_at": None}
         if "SELECT audit_status FROM capability_report_version" in self.last_sql:
@@ -298,6 +302,7 @@ class FakeReportRepository:
         self.upload_context_initial_audit_status = "passed"
         self.upload_error = None
         self.register_created = True
+        self.register_result_override = None
 
     def list_reports(self, filters, page_num, page_size):
         self.last_filters = filters
@@ -336,7 +341,9 @@ class FakeReportRepository:
 
     def register_initial_report(self, payload):
         self.registered_payload = payload
-        return {
+        if self.register_result_override is not None:
+            return self.register_result_override
+        result = {
             "reportId": 1,
             "versionId": 9,
             "auditId": 88,
@@ -345,6 +352,15 @@ class FakeReportRepository:
             "versionNo": 1,
             "created": self.register_created,
         }
+        if not self.register_created:
+            result.update(
+                {
+                    "deferred": True,
+                    "code": "AUDIT_IN_PROGRESS",
+                    "nextAction": "wait",
+                }
+            )
+        return result
 
     def prepare_uploaded_version(self, report_id):
         if report_id != 1:
@@ -486,6 +502,19 @@ class ReportRoutesTest(unittest.TestCase):
     def tearDown(self):
         self.storage.cleanup()
 
+    @staticmethod
+    def _batch_registration_payload(generation_id: str) -> dict[str, Any]:
+        return {
+            "systemId": "credit-card-center",
+            "title": "容量报告",
+            "reportMonth": "2026年08月",
+            "filePath": "/tmp/report.docx",
+            "fileName": "report.docx",
+            "fileSize": 100,
+            "generationId": generation_id,
+            "source": "batch",
+        }
+
     def test_list_reports_passes_filters_and_pagination(self):
         response = self.client.get(
             "/api/report-management/reports",
@@ -608,6 +637,24 @@ class ReportRoutesTest(unittest.TestCase):
             self.repository.registered_payload["generationId"],
             "batch-202508-credit-001",
         )
+        self.assertFalse(self.repository.registered_payload["debugReregistration"])
+
+    def test_register_initial_report_passes_debug_reregistration_setting(self):
+        self.app.config["BATCH_DEBUG_REREGISTRATION"] = True
+
+        response = self.client.post(
+            "/api/report-management/reports/register",
+            json={
+                "systemId": "credit-card-center",
+                "title": "中信银行信用卡中心授权交易资源分析报告",
+                "reportMonth": "2025年08月",
+                "filePath": "/appdata/report.docx",
+                "generationId": "batch-debug-001",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(self.repository.registered_payload["debugReregistration"])
 
     def test_register_initial_report_requires_fields(self):
         response = self.client.post("/api/report-management/reports/register", json={"systemId": "x"})
@@ -691,8 +738,40 @@ class ReportRoutesTest(unittest.TestCase):
             content_type="multipart/form-data",
         )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         self.assertFalse(response.json["created"])
+        self.assertEqual(response.json["nextAction"], "wait")
+        self.assertEqual(list(self.initial_report_dir.iterdir()), [])
+
+    def test_upload_and_register_returns_202_while_previous_audit_is_running(self):
+        self.repository.register_result_override = {
+            "reportId": 1,
+            "versionId": 9,
+            "versionNo": 1,
+            "auditId": 88,
+            "auditType": "initial",
+            "auditStatus": "running",
+            "created": False,
+            "deferred": True,
+            "code": "AUDIT_IN_PROGRESS",
+            "nextAction": "wait",
+        }
+
+        response = self.client.post(
+            "/api/report-management/reports/register-upload",
+            data={
+                "file": (make_docx(), "重复报告.docx"),
+                "systemId": "credit-card-center",
+                "title": "重复报告",
+                "reportMonth": "2025年08月",
+                "generationId": "next-generation-001",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["code"], "AUDIT_IN_PROGRESS")
+        self.assertEqual(response.json["nextAction"], "wait")
         self.assertEqual(list(self.initial_report_dir.iterdir()), [])
 
     def test_upload_and_register_initial_report_rejects_missing_fields_before_saving(self):
@@ -923,6 +1002,107 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertEqual(uploaded_insert[1], [1, 11, "revision"])
         self.assertEqual(initial_result["auditType"], "initial")
         self.assertEqual(uploaded_result["auditType"], "revision")
+
+    def test_batch_registration_returns_current_audit_while_running(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        cursor = RecordingCursor(
+            latest_report_version={
+                "id": 9,
+                "version_no": 1,
+                "source": "batch",
+                "audit_status": "running",
+                "audit_id": 88,
+            }
+        )
+
+        result = MySqlReportRepository(RecordingDatabase(cursor)).register_initial_report(
+            self._batch_registration_payload("batch-002")
+        )
+
+        self.assertFalse(result["created"])
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["code"], "AUDIT_IN_PROGRESS")
+        self.assertEqual(result["auditId"], 88)
+        self.assertFalse(
+            any(
+                sql.startswith("INSERT INTO capability_report_version")
+                for sql, _ in cursor.executions
+            )
+        )
+
+    def test_same_generation_is_idempotent_and_returns_state_action(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        cursor = RecordingCursor(
+            existing_generation={
+                "id": 9,
+                "version_no": 1,
+                "audit_id": 88,
+                "audit_status": "failed",
+            }
+        )
+
+        result = MySqlReportRepository(RecordingDatabase(cursor)).register_initial_report(
+            self._batch_registration_payload("batch-001")
+        )
+
+        self.assertFalse(result["created"])
+        self.assertEqual(result["code"], "INITIAL_AUDIT_FAILED")
+        self.assertEqual(result["nextAction"], "regenerate")
+        self.assertFalse(
+            any(
+                sql.startswith("INSERT INTO capability_report_version")
+                for sql, _ in cursor.executions
+            )
+        )
+
+    def test_batch_registration_allows_failed_and_error_versions(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        for status in ("failed", "error"):
+            with self.subTest(status=status):
+                cursor = RecordingCursor(
+                    latest_report_version={
+                        "id": 9,
+                        "version_no": 1,
+                        "source": "batch",
+                        "audit_status": status,
+                        "audit_id": 88,
+                    }
+                )
+                result = MySqlReportRepository(
+                    RecordingDatabase(cursor)
+                ).register_initial_report(self._batch_registration_payload(f"batch-{status}"))
+
+                self.assertTrue(result["created"])
+                self.assertEqual(result["versionNo"], 2)
+
+    def test_passed_batch_registration_stops_unless_debug_mode_is_enabled(self):
+        from app.repositories.reports import MySqlReportRepository
+
+        latest_version = {
+            "id": 9,
+            "version_no": 1,
+            "source": "batch",
+            "audit_status": "passed",
+            "audit_id": 88,
+        }
+        stopped = MySqlReportRepository(
+            RecordingDatabase(RecordingCursor(latest_report_version=latest_version))
+        ).register_initial_report(self._batch_registration_payload("batch-stopped"))
+
+        debug_payload = self._batch_registration_payload("batch-debug")
+        debug_payload["debugReregistration"] = True
+        continued = MySqlReportRepository(
+            RecordingDatabase(RecordingCursor(latest_report_version=latest_version))
+        ).register_initial_report(debug_payload)
+
+        self.assertFalse(stopped["created"])
+        self.assertEqual(stopped["code"], "INITIAL_AUDIT_PASSED")
+        self.assertEqual(stopped["nextAction"], "stop")
+        self.assertTrue(continued["created"])
+        self.assertEqual(continued["versionNo"], 2)
 
     def test_uploaded_version_number_is_allocated_while_report_is_locked(self):
         from app.repositories.reports import MySqlReportRepository

@@ -27,6 +27,12 @@ def _repository():
     return current_app.config["REPORT_REPOSITORY"]
 
 
+def _registration_status(result: dict) -> int:
+    if result.get("deferred"):
+        return 202
+    return 201 if result.get("created", True) else 200
+
+
 @reports.get("")
 def list_reports():
     filters = {
@@ -68,18 +74,23 @@ def register_initial_report():
             "filePath": payload["filePath"].strip(),
             "generationId": payload["generationId"].strip(),
             "source": payload.get("source", "batch"),
+            "debugReregistration": current_app.config.get(
+                "BATCH_DEBUG_REREGISTRATION", False
+            ),
         }
     )
     logger.info(
-        "report_registered transport=path generationId=%s systemId=%s reportId=%s versionId=%s auditId=%s created=%s",
+        "report_registered transport=path generationId=%s systemId=%s reportId=%s versionId=%s auditId=%s created=%s code=%s nextAction=%s",
         payload["generationId"].strip(),
         payload["systemId"].strip(),
         result.get("reportId"),
         result.get("versionId"),
         result.get("auditId"),
         result.get("created", True),
+        result.get("code"),
+        result.get("nextAction"),
     )
-    return jsonify(result), 201 if result.get("created", True) else 200
+    return jsonify(result), _registration_status(result)
 
 
 @reports.post("/register-upload")
@@ -128,6 +139,9 @@ def upload_and_register_initial_report():
                 "fileSize": uploaded_file_size,
                 "generationId": request.form["generationId"].strip(),
                 "source": request.form.get("source", "batch").strip() or "batch",
+                "debugReregistration": current_app.config.get(
+                    "BATCH_DEBUG_REREGISTRATION", False
+                ),
             }
         )
     except Exception:
@@ -142,16 +156,18 @@ def upload_and_register_initial_report():
     if not result.get("created", True):
         saved_path.unlink(missing_ok=True)
     logger.info(
-        "report_registered transport=upload generationId=%s systemId=%s reportId=%s versionId=%s auditId=%s created=%s fileSize=%s",
+        "report_registered transport=upload generationId=%s systemId=%s reportId=%s versionId=%s auditId=%s created=%s code=%s nextAction=%s fileSize=%s",
         request.form["generationId"].strip(),
         system_id,
         result.get("reportId"),
         result.get("versionId"),
         result.get("auditId"),
         result.get("created", True),
+        result.get("code"),
+        result.get("nextAction"),
         uploaded_file_size,
     )
-    return jsonify(result), 201 if result.get("created", True) else 200
+    return jsonify(result), _registration_status(result)
 
 
 @reports.post("/<int:report_id>/versions")

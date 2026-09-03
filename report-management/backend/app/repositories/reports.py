@@ -119,6 +119,60 @@ def _latest_audit_join_sql(audit_alias: str, version_alias: str) -> str:
     """
 
 
+def _batch_state_result(
+    report_id: int, version: dict[str, Any], debug_reregistration: bool
+) -> dict[str, Any]:
+    status = version.get("audit_status") or "pending"
+    result = {
+        "reportId": report_id,
+        "versionId": int(version["id"]),
+        "versionNo": int(version["version_no"]),
+        "auditId": version.get("audit_id"),
+        "auditType": "initial",
+        "auditStatus": status,
+        "created": False,
+    }
+    if status in {"pending", "running"}:
+        return {
+            **result,
+            "deferred": True,
+            "code": "AUDIT_IN_PROGRESS",
+            "message": "当前批次版本仍在初审，请等待审核完成",
+            "nextAction": "wait",
+        }
+    if status == "failed":
+        return {
+            **result,
+            "code": "INITIAL_AUDIT_FAILED",
+            "message": "初审不通过，请重新生成报告并使用新的generationId登记",
+            "nextAction": "regenerate",
+        }
+    if status == "error":
+        return {
+            **result,
+            "code": "INITIAL_AUDIT_ERROR",
+            "message": "初审执行异常，可使用新的generationId重新登记",
+            "nextAction": "retry",
+        }
+    if status == "passed":
+        return {
+            **result,
+            "code": "INITIAL_AUDIT_PASSED",
+            "message": (
+                "初审已通过，调试模式下可使用新的generationId继续登记"
+                if debug_reregistration
+                else "初审已通过，批次无需继续登记"
+            ),
+            "nextAction": "new_generation" if debug_reregistration else "stop",
+        }
+    return {
+        **result,
+        "code": "BATCH_REGENERATION_NOT_ALLOWED",
+        "message": "当前审核状态不支持重新登记",
+        "nextAction": "stop",
+    }
+
+
 class MySqlReportRepository:
     def __init__(self, database: Database):
         self.database = database
@@ -303,17 +357,19 @@ class MySqlReportRepository:
                     [report_id],
                 )
                 report = cursor.fetchone()
+                debug_reregistration = bool(payload.get("debugReregistration"))
                 cursor.execute(
                     """
                     SELECT version.id, version.version_no,
                            audit.id AS audit_id, audit.status AS audit_status
                       FROM capability_report_version version
                       LEFT JOIN capability_report_audit audit
-                        ON audit.version_id = version.id
-                       AND audit.create_time = (
-                           SELECT MAX(inner_audit.create_time)
+                        ON audit.id = (
+                           SELECT inner_audit.id
                              FROM capability_report_audit inner_audit
                             WHERE inner_audit.version_id = version.id
+                            ORDER BY inner_audit.id DESC
+                            LIMIT 1
                        )
                      WHERE version.report_id = %s
                        AND version.generation_id = %s
@@ -323,25 +379,28 @@ class MySqlReportRepository:
                 )
                 existing_generation = cursor.fetchone()
                 if existing_generation:
-                    return {
-                        "reportId": report_id,
-                        "versionId": int(existing_generation["id"]),
-                        "versionNo": int(existing_generation["version_no"]),
-                        "auditId": existing_generation["audit_id"],
-                        "auditType": "initial",
-                        "auditStatus": existing_generation["audit_status"] or "pending",
-                        "created": False,
-                    }
+                    return _batch_state_result(
+                        report_id, existing_generation, debug_reregistration
+                    )
 
                 if report["finalized_at"] is not None:
                     raise ReportFinalizedError()
 
                 cursor.execute(
                     """
-                    SELECT id, version_no, source, audit_status
-                      FROM capability_report_version
-                     WHERE report_id = %s
-                     ORDER BY version_no DESC
+                    SELECT version.id, version.version_no, version.source,
+                           version.audit_status, latest_audit.id AS audit_id
+                      FROM capability_report_version version
+                      LEFT JOIN capability_report_audit latest_audit
+                        ON latest_audit.id = (
+                            SELECT inner_audit.id
+                              FROM capability_report_audit inner_audit
+                             WHERE inner_audit.version_id = version.id
+                             ORDER BY inner_audit.id DESC
+                             LIMIT 1
+                        )
+                     WHERE version.report_id = %s
+                     ORDER BY version.version_no DESC
                      LIMIT 1
                     """,
                     [report_id],
@@ -352,16 +411,27 @@ class MySqlReportRepository:
                         raise ReportNotReadyError(
                             "报告已进入人工修订阶段，批次不能继续登记", "BATCH_STAGE_CLOSED"
                         )
-                    if latest_version["audit_status"] != "failed":
+                    latest_status = latest_version["audit_status"]
+                    if latest_status in {"pending", "running"}:
+                        return _batch_state_result(
+                            report_id, latest_version, debug_reregistration
+                        )
+                    if latest_status == "passed" and not debug_reregistration:
+                        return _batch_state_result(
+                            report_id, latest_version, debug_reregistration
+                        )
+                    if latest_status not in {"failed", "error", "passed"}:
                         raise ReportNotReadyError(
-                            "只有最新批次版本初审不通过后才能重新登记",
+                            "最新批次版本处于不支持重新登记的状态",
                             "BATCH_REGENERATION_NOT_ALLOWED",
                         )
-                    if report["jira_id"] or report["jira_status"] in {
-                        "pending",
-                        "creating",
-                        "created",
-                    }:
+                    if not debug_reregistration and (
+                        report["jira_id"] or report["jira_status"] in {
+                            "pending",
+                            "creating",
+                            "created",
+                        }
+                    ):
                         raise ReportNotReadyError(
                             "报告已进入JIRA创建或人工处理阶段", "BATCH_STAGE_CLOSED"
                         )

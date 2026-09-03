@@ -7,12 +7,14 @@ import unittest
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app import create_app  # noqa: E402
+from app.config import load_settings  # noqa: E402
 from app.services.docx_tools import extract_text_and_tables, is_docx  # noqa: E402
 from app.services.file_naming import build_versioned_filename  # noqa: E402
 
@@ -73,6 +75,14 @@ class FoundationTest(unittest.TestCase):
             filename,
             "credit-card-center_2025年08月_v2_20260811123045123456_报告_修订版.docx",
         )
+
+    def test_batch_debug_reregistration_flag_defaults_off_and_accepts_true(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(load_settings().batch_debug_reregistration)
+        with patch.dict(
+            "os.environ", {"REPORT_BATCH_DEBUG_REREGISTRATION": "true"}, clear=True
+        ):
+            self.assertTrue(load_settings().batch_debug_reregistration)
 
 
 if __name__ == "__main__":
