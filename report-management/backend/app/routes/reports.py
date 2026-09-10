@@ -238,6 +238,18 @@ def upload_report_version(report_id: int):
     return jsonify(result), 201
 
 
+@reports.post("/<int:report_id>/jira/retry")
+def retry_jira_creation(report_id: int):
+    if current_app.config.get('BATCH_DEBUG_REREGISTRATION', False):
+        return jsonify({'message': '调试模式暂停JIRA创建，请关闭调试模式后重试'}), 409
+    if not current_app.config['SETTINGS'].jira_create_url:
+        return jsonify({'message': '尚未配置JIRA创建接口'}), 409
+    result = _repository().retry_jira_creation(report_id)
+    if result is None:
+        return jsonify({'message': '未找到该报告'}), 404
+    return jsonify(result), 202 if result['created'] else 200
+
+
 @reports.post("/<int:report_id>/finalize")
 def finalize_report(report_id: int):
     payload = request.get_json(silent=True) or {}

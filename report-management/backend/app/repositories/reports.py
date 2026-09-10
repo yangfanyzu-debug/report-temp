@@ -468,6 +468,44 @@ class MySqlReportRepository:
             "created": True,
         }
 
+    def retry_jira_creation(self, report_id: int) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT id, jira_id, jira_status FROM capability_report_log WHERE id = %s FOR UPDATE', [report_id])
+                report = cursor.fetchone()
+                if report is None:
+                    return None
+                if report['jira_id'] or report['jira_status'] in {'pending', 'creating', 'created'}:
+                    return {'reportId': report_id, 'created': False, 'jiraStatus': report['jira_status']}
+                if report['jira_status'] != 'error':
+                    raise ReportNotReadyError('只有JIRA创建失败后才能重试', 'JIRA_RETRY_NOT_ALLOWED')
+                cursor.execute(
+                    """
+                    SELECT version.id AS version_id, audit.id AS audit_id
+                      FROM capability_report_version version
+                      JOIN capability_report_audit audit ON audit.id = (
+                          SELECT a.id FROM capability_report_audit a
+                           WHERE a.version_id = version.id ORDER BY a.id DESC LIMIT 1
+                      )
+                     WHERE version.report_id = %s AND version.version_type = 'initial'
+                       AND version.version_no = (
+                           SELECT MAX(v.version_no) FROM capability_report_version v
+                            WHERE v.report_id = %s AND v.version_type = 'initial'
+                       )
+                       AND version.audit_status = 'passed' AND audit.conclusion = 'passed'
+                    """, [report_id, report_id],
+                )
+                initial = cursor.fetchone()
+                if initial is None:
+                    raise ReportNotReadyError('初审通过后才能创建JIRA', 'INITIAL_AUDIT_NOT_PASSED')
+                cursor.execute(
+                    """UPDATE capability_report_log
+                       SET jira_status = 'pending', jira_attempts = 0, jira_error = NULL,
+                           jira_version_id = %s, jira_audit_id = %s WHERE id = %s""",
+                    [initial['version_id'], initial['audit_id'], report_id],
+                )
+        return {'reportId': report_id, 'created': True, 'jiraStatus': 'pending'}
+
     def prepare_uploaded_version(self, report_id: int) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             with connection.cursor() as cursor:
