@@ -227,6 +227,7 @@ class MySqlReportRepository:
                       report.report_month,
                       report.jira_id,
                       report.jira_status,
+                      report.jira_attempts,
                       report.jira_error,
                       report.final_version_id,
                       report.finalized_at,
@@ -748,6 +749,7 @@ class MySqlReportRepository:
                 "created" if row["jira_id"] else "not_created"
             ),
             "jiraError": row.get("jira_error"),
+            "jiraAttempts": int(row.get("jira_attempts") or 0),
             "isFinalized": row.get("finalized_at") is not None,
             "finalVersionId": row.get("final_version_id"),
             "finalizedAt": _format_time(row.get("finalized_at")),
